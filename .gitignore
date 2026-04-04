@@ -27,3 +27,9 @@ Desktop.ini
 # Logs
 *.log
 npm-debug.log*
+
+# Local agent memory
+memory/
+
+# Agent runtime memory
+memory/

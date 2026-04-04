@@ -499,6 +499,37 @@ button.danger:hover:enabled {
   margin: 0.85rem 0 0;
 }
 
+.tool-sources {
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.tool-sources p {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+  color: rgba(59, 130, 246, 0.9);
+}
+
+.tool-sources ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+}
+
+.tool-sources li {
+  margin-bottom: 0.25rem;
+  line-height: 1.4;
+}
+
+.tool-sources li strong {
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .message.assistant.streaming::after {
   content: "";
   display: inline-block;

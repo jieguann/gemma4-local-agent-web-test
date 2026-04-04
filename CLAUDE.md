@@ -16,20 +16,37 @@ No test framework or linter is configured.
 
 ## Architecture
 
-Single-page vanilla JS app (no framework). Two source files:
+Single-page vanilla JS app (no framework).
 
-- `src/main.js` — all application logic: model loading, multi-turn chat, streaming inference, UI state management, and markdown-like message formatting. Imports `FilesetResolver` and `LlmInference` from `@mediapipe/tasks-genai`. WASM assets are loaded from the jsDelivr CDN at runtime.
-- `src/styles.css` — dark-themed UI with Inter font, CSS custom properties, glassmorphism panels, animated status indicators, and responsive layout.
-- `index.html` — two-column layout: left sidebar (model controls/settings/status) and main workspace (chat conversation with composer).
+### Core UI
+- `src/main.js` — App entry: model loading, chat UI, streaming display, UI state. LangChain agent modules are **lazily imported** via dynamic `import()` after model load to avoid competing with WebGPU initialization. WASM assets loaded from jsDelivr CDN.
+- `src/styles.css` — dark-themed UI with CSS custom properties.
+- `index.html` — two-column layout: sidebar (model controls/status) + main chat workspace.
+
+### LangChain Comedy Agent (`src/agent/`)
+ReAct-style agent loop running in-browser using `@langchain/core`:
+- `index.js` — Agent orchestrator. `createComedyAgent()` runs a scratchpad-based loop (max 3 steps) using `ChatPromptTemplate.fromMessages()`. Parses `ACTION:`/`ANSWER:` text protocol.
+- `model.js` — `LangChainGemmaAdapter` wraps MediaPipe's `LlmInference` as a LangChain-compatible model. Handles streaming via `onToken`, auto-recovery when inference engine is busy.
+- `prompting.js` — Gemma prompt builder (`buildGemmaPrompt()`), control token stripping, `COMEDY_SYSTEM_PROMPT`, `AGENT_PROTOCOL_PROMPT`.
+- `output-parser.js` — Parses raw model output into `{type: "action", toolName, args}` or `{type: "answer"}`.
+- `tools.js` — `DynamicStructuredTool` definitions. Currently one tool: `web_search` (proxied through Vite server).
+- `memory.js` — File-backed agent memory via `/api/memory/profile` and `/api/memory/history`. Extracts tone/topic/style preferences from user messages.
+
+### Vite Server API (`vite.config.js`)
+Custom Vite plugin exposes local API endpoints:
+- `GET/POST /api/memory/profile` — audience preference profile (persisted to `memory/profile.json`)
+- `GET/POST /api/memory/history` — joke history (persisted to `memory/history.json`)
+- `GET /api/web-search?q=...` — Wikipedia search proxy for the agent's `web_search` tool
 
 ## Key Patterns
 
-- **Chat prompt format**: Uses Gemma's native `<start_of_turn>user`/`<start_of_turn>model` template with `<end_of_turn>` delimiters. See `buildChatPrompt()`.
-- **Control token stripping**: `stripControlTokens()` removes leaked `<start_of_turn>`, `<end_of_turn>`, and variant tokens from model output before display.
-- **Streaming updates**: During generation, only the last message's DOM content is updated in-place (`updateLastMessage()`), not the full chat via `innerHTML`, to avoid flicker.
-- **Message formatting**: `formatMessageText()` converts plain text to structured HTML with paragraphs, headings, bold, and horizontal rules. Applied via `innerHTML` on `.message-body` divs.
-- **Auto-recovery**: If the inference engine reports it's still busy from a prior run, the model is automatically recreated and the request retried once (`runInference()` with `allowRecovery`).
-- **Status indicators**: `.facts li` elements use CSS classes (`ok`, `warn`, `error`, `loading`) for colored dot indicators. Set via `setFactStatus()`.
+- **Chat prompt format**: Uses Gemma's native `<start_of_turn>user`/`<start_of_turn>model` template. See `buildGemmaPrompt()` in `src/agent/prompting.js`.
+- **Control token stripping**: `stripControlTokens()` removes leaked `<start_of_turn>`, `<end_of_turn>`, and variant tokens from model output.
+- **Lazy agent imports**: LangChain modules are loaded via dynamic `import()` only after model is ready, to avoid heavy JS parsing competing with WebGPU initialization. Critical for avoiding GPU adapter exhaustion.
+- **Streaming updates**: Only the last message's DOM content is updated in-place (`updateLastMessage()`), not the full chat, to avoid flicker.
+- **Auto-recovery**: `LangChainGemmaAdapter` recreates the inference engine and retries once if the engine reports it's still busy.
+- **Agent text protocol**: The agent uses `ACTION: tool_name({...})` / `ANSWER: ...` text format (not function calling) since MediaPipe models don't support tool-use tokens.
+- **Status indicators**: `.facts li` elements use CSS classes (`ok`, `warn`, `error`, `loading`) for colored dot indicators via `setFactStatus()`.
 
 ## Model Files
 
@@ -40,3 +57,5 @@ Model files (`.task`, `.litertlm`, `.bin`) live in `public/assets/` and are serv
 - Requires a Chromium-based browser with WebGPU support.
 - ES modules (`"type": "module"` in package.json).
 - Generation settings (maxTokens, topK, temperature, seed) are locked while a model is loaded — unload and reload to change them.
+- **WebGPU adapter sensitivity**: Never call `navigator.gpu.requestAdapter()` outside MediaPipe's own initialization. Multiple concurrent adapter requests can crash the GPU process. If the adapter fails, a full browser restart (not just page reload) is needed.
+- **Small context window**: Gemma E2B has limited context. Keep agent prompts concise — the comedy system prompt + protocol + memory + scratchpad must all fit. Agent history is capped at 2-3 turns.

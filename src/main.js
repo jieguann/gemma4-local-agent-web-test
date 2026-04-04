@@ -1,6 +1,23 @@
 import { FilesetResolver, LlmInference } from "@mediapipe/tasks-genai";
 import "./styles.css";
 
+// LangChain agent modules are loaded lazily after the model is ready
+// to avoid the heavy bundle competing with WebGPU initialization.
+let _agentModules = null;
+async function getAgentModules() {
+  if (!_agentModules) {
+    const [agentMod, modelMod] = await Promise.all([
+      import("./agent/index.js"),
+      import("./agent/model.js"),
+    ]);
+    _agentModules = {
+      createComedyAgent: agentMod.createComedyAgent,
+      LangChainGemmaAdapter: modelMod.LangChainGemmaAdapter,
+    };
+  }
+  return _agentModules;
+}
+
 const modelFileInput = document.querySelector("#modelFile");
 const maxTokensInput = document.querySelector("#maxTokens");
 const topKInput = document.querySelector("#topK");
@@ -19,7 +36,6 @@ const cancelButton = document.querySelector("#cancelButton");
 const clearChatButton = document.querySelector("#clearChatButton");
 const chatMessages = document.querySelector("#chatMessages");
 const generatingIndicator = document.querySelector("#generatingIndicator");
-const imageInput = document.querySelector("#imageInput");
 const attachImageButton = document.querySelector("#attachImageButton");
 const imagePreview = document.querySelector("#imagePreview");
 
@@ -28,23 +44,17 @@ const BUNDLED_MODEL_LABELS = {
   "/assets/gemma-4-E2B-it-web.task": "Gemma 4 E2B Web",
   "/assets/gemma-4-E4B-it-web.task": "Gemma 4 E4B Web",
 };
-const BUNDLED_MODEL_VISION_SUPPORT = {
-  "/assets/gemma-4-E2B-it-web.task": false,
-  "/assets/gemma-4-E4B-it-web.task": false,
-};
-const SYSTEM_PROMPT =
-  "You are Gemma running locally in a browser chat demo. Answer helpfully and concisely.";
 
 let llmInference;
+let comedyAgent;
 let isGenerating = false;
 let activeModelSource;
 let conversation = [];
-let pendingImage = null; // { dataUrl: string, element: HTMLImageElement }
-let visionSupported = false;
 
 setWebGpuStatus();
 renderConversation();
 syncUi();
+hideImageUi();
 loadModel();
 
 loadModelButton.addEventListener("click", loadModel);
@@ -53,80 +63,36 @@ runButton.addEventListener("click", handleSendMessage);
 cancelButton.addEventListener("click", cancelGeneration);
 clearChatButton.addEventListener("click", clearChat);
 promptInput.addEventListener("input", updatePromptTokens);
+promptInput.addEventListener("input", autoResizeTextarea);
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     handleSendMessage();
   }
 });
-promptInput.addEventListener("input", autoResizeTextarea);
-attachImageButton.addEventListener("click", () => imageInput.click());
-imageInput.addEventListener("change", handleImageAttach);
+
+function hideImageUi() {
+  imagePreview.classList.add("hidden");
+  imagePreview.innerHTML = "";
+  attachImageButton.disabled = true;
+  attachImageButton.title = "Agent mode is text-only";
+}
 
 function autoResizeTextarea() {
   promptInput.style.height = "auto";
-  promptInput.style.height = Math.min(promptInput.scrollHeight, 160) + "px";
+  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 160)}px`;
 }
 
-function handleImageAttach() {
-  const file = imageInput.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = () => {
-    const img = new Image();
-    img.onload = () => {
-      pendingImage = { dataUrl: reader.result, element: img };
-      renderImagePreview();
-    };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
-  imageInput.value = "";
-}
-
-function removePendingImage() {
-  pendingImage = null;
-  renderImagePreview();
-}
-
-function renderImagePreview() {
-  if (!pendingImage) {
-    imagePreview.classList.add("hidden");
-    imagePreview.innerHTML = "";
-    return;
-  }
-
-  imagePreview.classList.remove("hidden");
-  imagePreview.innerHTML = `
-    <div class="image-preview-item">
-      <img src="${pendingImage.dataUrl}" alt="Attached image" />
-      <button class="image-remove-btn" title="Remove image">&times;</button>
-    </div>
-  `;
-  imagePreview.querySelector(".image-remove-btn").addEventListener("click", removePendingImage);
-}
-
-async function setWebGpuStatus() {
+function setWebGpuStatus() {
+  // Only check if the API exists — don't call requestAdapter() here
+  // because MediaPipe will request its own adapter during model load,
+  // and multiple concurrent adapter requests can exhaust the GPU process.
   if (!("gpu" in navigator)) {
     setFactStatus(webgpuStatus, "error", "WebGPU: unavailable");
-    setStatus("WebGPU is not available. Use a compatible Chromium-based browser.");
+    setStatus("WebGPU is not available. Use a Chromium-based browser with WebGPU enabled.");
     return;
   }
-
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      setFactStatus(webgpuStatus, "warn", "WebGPU: no adapter");
-      setStatus("WebGPU is exposed, but no GPU adapter is available.");
-      return;
-    }
-
-    setFactStatus(webgpuStatus, "ok", "WebGPU: available");
-  } catch (error) {
-    setFactStatus(webgpuStatus, "error", "WebGPU: failed");
-    setStatus(`WebGPU adapter check failed: ${getErrorMessage(error)}`);
-  }
+  setFactStatus(webgpuStatus, "ok", "WebGPU: detected");
 }
 
 function setFactStatus(element, level, text) {
@@ -144,7 +110,7 @@ async function loadModel() {
 
   try {
     loadModelButton.disabled = true;
-    const modelLabel = modelFile ? modelFile.name : DEFAULT_MODEL_PATH;
+    const modelLabel = modelFile ? modelFile.name : bundledModelSelect.value || DEFAULT_MODEL_PATH;
     setStatus(`Loading ${modelLabel}...`);
     setFactStatus(modelStatus, "loading", "Model: loading...");
 
@@ -155,7 +121,6 @@ async function loadModel() {
         label: modelFile.name,
         type: "buffer",
         value: new Uint8Array(await modelFile.arrayBuffer()),
-        supportsVision: inferVisionSupportFromFileName(modelFile.name),
       };
     } else {
       const selectedBundledModel = bundledModelSelect.value || DEFAULT_MODEL_PATH;
@@ -163,22 +128,54 @@ async function loadModel() {
         label: BUNDLED_MODEL_LABELS[selectedBundledModel] ?? selectedBundledModel,
         type: "path",
         value: selectedBundledModel,
-        supportsVision: BUNDLED_MODEL_VISION_SUPPORT[selectedBundledModel] ?? false,
       };
     }
 
     llmInference = await createInference(activeModelSource);
+
+    setStatus("Loading agent...");
+    const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
+    comedyAgent = createComedyAgent({
+      model: new LangChainGemmaAdapter({
+        getInference: () => llmInference,
+        recreateInference,
+        onStatus: setStatus,
+      }),
+      onStatus: setStatus,
+    });
+
     setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
-    setStatus("Model loaded. You can start chatting.");
+    setStatus("Model loaded. Ask for a short joke and the agent will keep local memory in memory/.");
     updatePromptTokens();
   } catch (error) {
     setFactStatus(modelStatus, "error", "Model: failed to load");
     setStatus(`Load failed: ${getErrorMessage(error)}`);
     llmInference?.close();
     llmInference = undefined;
+    comedyAgent = undefined;
   } finally {
     syncUi();
   }
+}
+
+async function recreateInference() {
+  if (!activeModelSource) {
+    throw new Error("No active model source to recreate.");
+  }
+
+  llmInference?.close();
+  llmInference = await createInference(activeModelSource);
+  const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
+  comedyAgent = createComedyAgent({
+    model: new LangChainGemmaAdapter({
+      getInference: () => llmInference,
+      recreateInference,
+      onStatus: setStatus,
+    }),
+    onStatus: setStatus,
+  });
+  setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
+  syncUi();
 }
 
 function unloadModel() {
@@ -187,39 +184,50 @@ function unloadModel() {
     llmInference = undefined;
   }
 
+  comedyAgent = undefined;
   isGenerating = false;
   activeModelSource = undefined;
-  visionSupported = false;
   setFactStatus(modelStatus, "", "Model: not loaded");
   tokenStatus.className = "";
   tokenStatus.textContent = "Chat tokens: n/a";
   syncUi();
 }
 
+async function createInference(modelSource) {
+  const wasmFileset = await FilesetResolver.forGenAiTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai/wasm",
+  );
+  const baseOptions =
+    modelSource.type === "buffer"
+      ? { modelAssetBuffer: modelSource.value, delegate: "GPU" }
+      : { modelAssetPath: modelSource.value, delegate: "GPU" };
+
+  return LlmInference.createFromOptions(wasmFileset, {
+    baseOptions,
+    maxTokens: readNumber(maxTokensInput, 1024),
+    topK: readNumber(topKInput, 40),
+    temperature: readFloat(temperatureInput, 0.8),
+    randomSeed: readNumber(randomSeedInput, 101),
+  });
+}
+
 async function handleSendMessage() {
-  if (!llmInference || isGenerating) {
+  if (!llmInference || !comedyAgent || isGenerating) {
     return;
   }
 
   const prompt = promptInput.value.trim();
-  if (!prompt && !pendingImage) {
-    setStatus("Enter a message or attach an image first.");
+  if (!prompt) {
+    setStatus("Enter a prompt so the comedy agent has something to riff on.");
     return;
   }
 
-  const hasImage = Boolean(pendingImage);
-  const draftPrompt = prompt;
-  const draftImage = pendingImage;
-  const userMessage = {
-    role: "user",
-    text: prompt || (hasImage ? "(image)" : ""),
-    image: hasImage ? { dataUrl: pendingImage.dataUrl, element: pendingImage.element } : null,
-  };
+  const userMessage = { role: "user", text: prompt };
+  const conversationSnapshot = [...conversation, userMessage];
   conversation.push(userMessage);
   promptInput.value = "";
-  pendingImage = null;
-  renderImagePreview();
   autoResizeTextarea();
+
   const assistantMessage = { role: "assistant", text: "" };
   conversation.push(assistantMessage);
   renderConversation();
@@ -228,38 +236,37 @@ async function handleSendMessage() {
     isGenerating = true;
     generatingIndicator.classList.add("active");
     syncUi();
+    setStatus("The comedy agent is warming up...");
 
-    if (hasImage) {
-        const ok = await ensureVision();
-        if (!ok) {
-          conversation.pop();
-          conversation.pop();
-          restoreDraftInput(draftPrompt, draftImage);
-          renderConversation();
-          return;
+    const result = await comedyAgent.run(prompt, {
+      conversation: conversationSnapshot,
+      onToken: (partialText) => {
+        assistantMessage.text = partialText;
+        updateLastAssistantMessage(assistantMessage);
+      },
+      onToolUse: ({ tool, query, status, result }) => {
+        if (status === "searching") {
+          assistantMessage.toolInfo = `<div class="tool-sources"><p>🔍 Searching: "${escapeHtml(query)}"...</p></div>`;
+          assistantMessage.text = "";
+        } else if (status === "done") {
+          assistantMessage.toolInfo = formatSearchSources(query, result);
+          assistantMessage.text = "";
         }
-      }
-
-    setStatus("Generating...");
-
-    const response = await runInference(buildChatPrompt(), (partialText) => {
-      assistantMessage.text = partialText;
-      updateLastMessage(partialText);
+        updateLastAssistantMessage(assistantMessage);
+      },
     });
 
-    assistantMessage.text = response;
-    setStatus("Generation finished.");
+    assistantMessage.text = result.output;
+    setStatus(
+      result.usedTools.length
+        ? `Generation finished. Tools used: ${result.usedTools.join(", ")}.`
+        : "Generation finished.",
+    );
   } catch (error) {
-    if (hasImage && isVisionUnsupportedError(error)) {
-      await fallbackToTextOnlyModel();
-      conversation.pop();
-      conversation.pop();
-      restoreDraftInput(draftPrompt, draftImage);
-      setStatus("This model can't process images. Use a vision-enabled Gemma .task file, or send the message without an image.");
-      return;
-    }
-
     conversation.pop();
+    conversation.pop();
+    promptInput.value = prompt;
+    autoResizeTextarea();
     setStatus(`Generation failed: ${getErrorMessage(error)}`);
   } finally {
     isGenerating = false;
@@ -276,8 +283,9 @@ function cancelGeneration() {
     return;
   }
 
+  comedyAgent?.cancel();
   llmInference.cancelProcessing();
-  setStatus("Cancel requested. The current decode will stop when the runtime allows it.");
+  setStatus("Cancel requested. The current generation will stop when the runtime allows it.");
 }
 
 function clearChat() {
@@ -288,132 +296,30 @@ function clearChat() {
   conversation = [];
   renderConversation();
   updatePromptTokens();
-  setStatus("Chat history cleared.");
-}
-
-async function runInference(prompt, onPartial, allowRecovery = true) {
-  let streamedText = "";
-
-  try {
-    const raw = await llmInference.generateResponse(prompt, (partialResult) => {
-      streamedText += partialResult;
-      onPartial(stripControlTokens(streamedText));
-    });
-    return stripControlTokens(raw);
-  } catch (error) {
-    const message = getErrorMessage(error);
-    if (allowRecovery && shouldRecreateModel(message) && activeModelSource) {
-      setStatus("The inference engine stayed busy after the last run. Recreating the model and retrying.");
-      llmInference?.close();
-      llmInference = await createInference(activeModelSource, visionSupported);
-      setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
-      syncUi();
-      return runInference(prompt, onPartial, false);
-    }
-
-    throw error;
-  }
-}
-
-async function createInference(modelSource, enableVision = false) {
-  const wasmFileset = await FilesetResolver.forGenAiTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai/wasm",
-  );
-  const baseOptions =
-    modelSource.type === "buffer"
-      ? { modelAssetBuffer: modelSource.value, delegate: "GPU" }
-      : { modelAssetPath: modelSource.value, delegate: "GPU" };
-
-  const options = {
-    baseOptions,
-    maxTokens: readNumber(maxTokensInput, 1024),
-    topK: readNumber(topKInput, 40),
-    temperature: readFloat(temperatureInput, 0.8),
-    randomSeed: readNumber(randomSeedInput, 101),
-  };
-
-  if (enableVision) {
-    options.maxNumImages = 1;
-  }
-
-  return LlmInference.createFromOptions(wasmFileset, options);
-}
-
-async function ensureVision() {
-  if (visionSupported || !activeModelSource) return true;
-
-  if (activeModelSource.supportsVision === false) {
-    setStatus("This MediaPipe model can't process images. Use a Gemma 3n multimodal browser model to attach images.");
-    return false;
-  }
-
-  setStatus("Reloading model with vision support...");
-  setFactStatus(modelStatus, "loading", "Model: enabling vision...");
-  try {
-    llmInference?.close();
-    llmInference = await createInference(activeModelSource, true);
-    visionSupported = true;
-    activeModelSource.supportsVision = true;
-    setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label} (vision)`);
-    setStatus("Vision enabled. Generating...");
-    return true;
-  } catch {
-    activeModelSource.supportsVision = false;
-    await fallbackToTextOnlyModel();
-    setStatus("Image input is not available for this model. MediaPipe browser vision support requires a Gemma 3n multimodal model.");
-    return false;
-  }
-}
-
-async function fallbackToTextOnlyModel() {
-  visionSupported = false;
-
-  if (!activeModelSource) {
-    return;
-  }
-
-  try {
-    llmInference?.close();
-    llmInference = await createInference(activeModelSource, false);
-    setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
-  } catch (error) {
-    llmInference = undefined;
-    setFactStatus(modelStatus, "error", "Model: failed to load");
-    setStatus(`Load failed: ${getErrorMessage(error)}`);
-  }
-}
-
-function restoreDraftInput(prompt, image) {
-  promptInput.value = prompt;
-  pendingImage = image;
-  renderImagePreview();
-  autoResizeTextarea();
+  setStatus("Chat history cleared. Saved memory files stay on disk until you remove them.");
 }
 
 function renderConversation() {
   if (conversation.length === 0) {
     chatMessages.innerHTML = `
       <article class="message assistant">
-        <p class="message-role">Gemma</p>
-        <div class="message-body"><p>Load the model, then send a message to start chatting.</p></div>
+        <p class="message-role">Gemma Comedy Agent</p>
+        <div class="message-body"><p>Load the model, then ask for a short joke. The agent can use online info and save audience memory to local files.</p></div>
       </article>
     `;
     return;
   }
 
   chatMessages.innerHTML = conversation
-    .map((message, i) => {
-      const isLast = i === conversation.length - 1;
+    .map((message, index) => {
+      const isLast = index === conversation.length - 1;
       const isStreaming = isLast && message.role === "assistant" && isGenerating;
-      const roleLabel = message.role === "assistant" ? "Gemma" : "You";
+      const roleLabel = message.role === "assistant" ? "Gemma Comedy Agent" : "You";
       const extraClass = isStreaming ? " streaming" : "";
-      const imageHtml = message.image
-        ? `<img class="message-image" src="${message.image.dataUrl}" alt="User image" />`
-        : "";
+
       return `
         <article class="message ${message.role}${extraClass}">
           <p class="message-role">${escapeHtml(roleLabel)}</p>
-          ${imageHtml}
           <div class="message-body">${formatMessageText(message)}</div>
         </article>
       `;
@@ -423,54 +329,18 @@ function renderConversation() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-function updateLastMessage(text) {
+function updateLastAssistantMessage(message) {
   const lastArticle = chatMessages.querySelector(".message:last-child");
-  if (!lastArticle) return;
+  if (!lastArticle) {
+    return;
+  }
 
   const body = lastArticle.querySelector(".message-body");
   if (body) {
-    body.innerHTML = formatMessageText({ role: "assistant", text });
+    body.innerHTML = formatMessageText(message);
   }
 
   chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function buildChatPrompt() {
-  const hasAnyImage = conversation.some((m) => m.image);
-
-  if (!hasAnyImage) {
-    let text = `<start_of_turn>user\n${SYSTEM_PROMPT}<end_of_turn>\n`;
-    for (const message of conversation) {
-      if (!message.text.trim()) continue;
-      const role = message.role === "user" ? "user" : "model";
-      text += `<start_of_turn>${role}\n${message.text}<end_of_turn>\n`;
-    }
-    text += "<start_of_turn>model\n";
-    return text;
-  }
-
-  // Multimodal: build an interleaved array of strings and {imageSource} objects
-  const parts = [];
-  parts.push(`<start_of_turn>user\n${SYSTEM_PROMPT}<end_of_turn>\n`);
-
-  for (const message of conversation) {
-    const role = message.role === "user" ? "user" : "model";
-    let turnText = `<start_of_turn>${role}\n`;
-
-    if (message.image) {
-      // Interleave: text before image, then image, then rest
-      turnText += message.text ? `${message.text}\n` : "Describe this image\n";
-      parts.push(turnText);
-      parts.push({ imageSource: message.image.element });
-      parts.push("<end_of_turn>\n");
-    } else if (message.text.trim()) {
-      turnText += `${message.text}<end_of_turn>\n`;
-      parts.push(turnText);
-    }
-  }
-
-  parts.push("<start_of_turn>model\n");
-  return parts;
 }
 
 function updatePromptTokens() {
@@ -481,8 +351,9 @@ function updatePromptTokens() {
 
   try {
     const pendingPrompt = promptInput.value.trim();
-    const draftConversation =
-      pendingPrompt === "" ? conversation : [...conversation, { role: "user", text: pendingPrompt }];
+    const draftConversation = pendingPrompt
+      ? [...conversation, { role: "user", text: pendingPrompt }]
+      : conversation;
     const prompt = buildPromptFromMessages(draftConversation);
     const size = llmInference.sizeInTokens(prompt);
     tokenStatus.textContent = `Chat tokens: ${size ?? "unknown"}`;
@@ -492,11 +363,14 @@ function updatePromptTokens() {
 }
 
 function buildPromptFromMessages(messages) {
-  let prompt = `<start_of_turn>user\n${SYSTEM_PROMPT}<end_of_turn>\n`;
+  let prompt = `<start_of_turn>user\n${COMEDY_SYSTEM_PROMPT}<end_of_turn>\n`;
 
   for (const message of messages) {
-    if (!message.text.trim()) continue;
-    const role = message.role === "user" ? "user" : "model";
+    if (!message.text?.trim()) {
+      continue;
+    }
+
+    const role = message.role === "assistant" ? "model" : "user";
     prompt += `<start_of_turn>${role}\n${message.text}<end_of_turn>\n`;
   }
 
@@ -506,7 +380,6 @@ function buildPromptFromMessages(messages) {
 
 function syncUi() {
   const modelLoaded = Boolean(llmInference);
-  const canAttachImage = modelLoaded && !isGenerating && activeModelSource?.supportsVision !== false;
 
   loadModelButton.disabled = isGenerating;
   unloadModelButton.disabled = !modelLoaded || isGenerating;
@@ -520,48 +393,12 @@ function syncUi() {
   temperatureInput.disabled = modelLoaded || isGenerating;
   randomSeedInput.disabled = modelLoaded || isGenerating;
   promptInput.disabled = !modelLoaded || isGenerating;
-  attachImageButton.disabled = !canAttachImage;
-  attachImageButton.title =
-    activeModelSource?.supportsVision === false
-      ? "This model does not support image input"
-      : "Attach image";
+  attachImageButton.disabled = true;
+  attachImageButton.title = "Agent mode is text-only";
 }
 
 function setStatus(message) {
   statusText.textContent = message;
-}
-
-function shouldRecreateModel(message) {
-  return (
-    message.includes("Previous invocation or loading is still ongoing") ||
-    message.includes("Cannot process because LLM inference engine is currently loading or processing")
-  );
-}
-
-function isVisionUnsupportedError(error) {
-  const message = getErrorMessage(error);
-  return (
-    message.includes("LlmVisionInferenceCalculator") ||
-    message.includes("Image models could not be created")
-  );
-}
-
-function inferVisionSupportFromFileName(fileName) {
-  const normalized = fileName.toLowerCase();
-
-  if (normalized.includes("gemma-3n")) {
-    return true;
-  }
-
-  if (normalized.includes("-web.task") || normalized.includes("gemma-4")) {
-    return false;
-  }
-
-  if (normalized.includes("vision") || normalized.includes("image") || normalized.includes("multimodal")) {
-    return true;
-  }
-
-  return undefined;
 }
 
 function readNumber(input, fallback) {
@@ -574,20 +411,8 @@ function readFloat(input, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function stripControlTokens(text) {
-  return text
-    .replace(/<start_of_turn>(?:user|model)\n?/g, "")
-    .replace(/<end_of_turn>/g, "")
-    .replace(/<[^>]*अंत[^>]*>/g, "")
-    .trim();
-}
-
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function capitalize(value) {
-  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
 function escapeHtml(value) {
@@ -599,16 +424,34 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function formatSearchSources(query, result) {
+  if (!result) return "";
+  const lines = String(result).split("\n").filter(l => l.trim());
+  const sources = lines.map(line => {
+    const match = line.match(/^\d+\.\s*(.+?):\s*(.+)$/);
+    if (match) return `<li><strong>${decodeAndEscape(match[1])}</strong>: ${decodeAndEscape(match[2].slice(0, 100))}</li>`;
+    return `<li>${decodeAndEscape(line.slice(0, 120))}</li>`;
+  }).join("");
+  return `<div class="tool-sources"><p>🔍 Searched: "${escapeHtml(query)}"</p><ul>${sources}</ul></div>`;
+}
+
+function decodeAndEscape(text) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return escapeHtml(textarea.value);
+}
+
 function formatMessageText(message) {
+  const toolInfo = message.toolInfo || "";
   const text = message.text || (message.role === "assistant" ? "..." : "");
   const normalized = escapeHtml(text).replace(/\r\n/g, "\n");
   const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim() !== "");
 
   if (blocks.length === 0) {
-    return "<p>...</p>";
+    return toolInfo || "<p>...</p>";
   }
 
-  return blocks
+  return toolInfo + blocks
     .map((block) => {
       const trimmed = block.trim();
 
@@ -639,5 +482,5 @@ function isStandaloneTitle(text) {
     return false;
   }
 
-  return /^[A-Z][A-Za-z0-9 !?,'".:-]*$/.test(text);
+  return /^[A-Z][A-Za-z0-9 !?',".:-]*$/.test(text);
 }
