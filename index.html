@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemma Web Local Chat</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="panel controls">
+        <div class="brand">
+          <p class="eyebrow">MediaPipe LLM Inference</p>
+          <h1>Gemma Local Chat</h1>
+          <p class="lede">
+            Run a local Gemma 4 model as a chat app entirely in the browser via WebGPU.
+          </p>
+        </div>
+
+        <div>
+          <p class="section-label">Bundled model</p>
+          <div class="status-card">
+            <p class="status-text">
+              Default: <code>/assets/gemma-4-E2B-it-web.task</code>
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <p class="section-label">Model override</p>
+          <label class="field">
+            <input id="modelFile" type="file" accept=".task,.litertlm,.bin" />
+          </label>
+          <p class="hint" style="margin-top: 0.4rem;">
+            Leave empty to use the bundled Gemma 4 E2B model.
+          </p>
+        </div>
+
+        <div>
+          <p class="section-label">Generation settings</p>
+          <div class="grid">
+            <label class="field">
+              <span>Max tokens</span>
+              <input id="maxTokens" type="number" min="32" max="8192" step="1" value="1024" />
+            </label>
+            <label class="field">
+              <span>Top-K</span>
+              <input id="topK" type="number" min="1" max="100" step="1" value="40" />
+            </label>
+            <label class="field">
+              <span>Temperature</span>
+              <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.8" />
+            </label>
+            <label class="field">
+              <span>Random seed</span>
+              <input id="randomSeed" type="number" min="0" max="999999" step="1" value="101" />
+            </label>
+          </div>
+          <p class="hint" style="margin-top: 0.5rem;">
+            Applied when the model loads. Unload and reload to change.
+          </p>
+        </div>
+
+        <div>
+          <div class="actions">
+            <button id="loadModelButton" class="primary">Load model</button>
+            <button id="unloadModelButton" class="danger">Unload</button>
+          </div>
+        </div>
+
+        <div class="status-card">
+          <p class="status-title">Status</p>
+          <p id="statusText" class="status-text">Waiting for model.</p>
+          <ul class="facts">
+            <li id="webgpuStatus">WebGPU: checking</li>
+            <li id="modelStatus">Model: not loaded</li>
+            <li id="tokenStatus">Chat tokens: n/a</li>
+          </ul>
+        </div>
+      </aside>
+
+      <main class="panel workspace">
+        <section class="chat-card">
+          <div class="chat-header">
+            <div class="chat-header-left">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <h2>Conversation</h2>
+            </div>
+            <div class="actions">
+              <button id="clearChatButton">Clear</button>
+              <button id="cancelButton" disabled>Cancel</button>
+            </div>
+          </div>
+
+          <div id="chatMessages" class="chat-messages">
+            <article class="message assistant">
+              <p class="message-role">Gemma</p>
+              <p>Load the model, then send a message to start chatting.</p>
+            </article>
+          </div>
+
+          <div id="generatingIndicator" class="generating-indicator">
+            <span class="generating-dots"><span></span><span></span><span></span></span>
+            Gemma is thinking...
+          </div>
+
+          <div class="composer">
+            <label class="field">
+              <textarea
+                id="promptInput"
+                rows="1"
+                spellcheck="false"
+                placeholder="Ask Gemma something..."
+              ></textarea>
+            </label>
+            <button id="runButton" class="primary send-btn" disabled title="Send message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+        </section>
+
+        <section class="notes">
+          <div>
+            <p class="eyebrow">Notes</p>
+            <h2>Model guidance</h2>
+          </div>
+          <ul>
+            <li>Requires a Chromium-based browser with WebGPU enabled.</li>
+            <li>Gemma 4 Web models use browser-optimized <code>.task</code> files.</li>
+            <li>Everything runs locally — nothing is sent to an external API.</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

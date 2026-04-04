@@ -1,0 +1,29 @@
+node_modules/
+dist/
+
+# Model files (too large for git)
+public/assets/*.task
+public/assets/*.litertlm
+public/assets/*.bin
+
+# Editor / IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Env
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
