@@ -515,7 +515,83 @@ button.danger:hover:enabled {
   50% { opacity: 0; }
 }
 
+/* ── Image preview ── */
+.image-preview {
+  padding: 0.5rem 1.25rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.image-preview.hidden {
+  display: none;
+}
+
+.image-preview-item {
+  position: relative;
+  display: inline-block;
+}
+
+.image-preview-item img {
+  max-height: 120px;
+  max-width: 200px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
+.image-remove-btn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(10, 20, 36, 0.95);
+  color: var(--danger);
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.image-remove-btn:hover {
+  background: rgba(248, 113, 113, 0.15);
+}
+
+/* ── Message image ── */
+.message-image {
+  max-height: 200px;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+  object-fit: contain;
+}
+
 /* ── Composer ── */
+.icon-btn {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.icon-btn:hover:enabled {
+  color: var(--accent);
+  border-color: var(--border-focus);
+  background: var(--accent-dim);
+}
+
 .composer {
   padding: 1rem 1.25rem;
   border-top: 1px solid var(--border);

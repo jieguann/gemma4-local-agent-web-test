@@ -20,8 +20,15 @@
         <div>
           <p class="section-label">Bundled model</p>
           <div class="status-card">
+            <label class="field">
+              <span>Choose bundled model</span>
+              <select id="bundledModelSelect">
+                <option value="/assets/gemma-4-E2B-it-web.task">Gemma 4 E2B Web</option>
+                <option value="/assets/gemma-4-E4B-it-web.task">Gemma 4 E4B Web</option>
+              </select>
+            </label>
             <p class="status-text">
-              Default: <code>/assets/gemma-4-E2B-it-web.task</code>
+              The app will load the selected bundled model unless you choose a file override below.
             </p>
           </div>
         </div>
@@ -32,7 +39,7 @@
             <input id="modelFile" type="file" accept=".task,.litertlm,.bin" />
           </label>
           <p class="hint" style="margin-top: 0.4rem;">
-            Leave empty to use the bundled Gemma 4 E2B model.
+            Leave empty to use the bundled model selected above.
           </p>
         </div>
 
@@ -106,7 +113,17 @@
             Gemma is thinking...
           </div>
 
+          <div id="imagePreview" class="image-preview hidden"></div>
+
           <div class="composer">
+            <input id="imageInput" type="file" accept="image/*" hidden />
+            <button id="attachImageButton" class="icon-btn" title="Attach image">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+            </button>
             <label class="field">
               <textarea
                 id="promptInput"

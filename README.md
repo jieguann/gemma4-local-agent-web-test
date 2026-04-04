@@ -1,6 +1,6 @@
 # Gemma Web Local Chat
 
-Small Vite app for chatting with a local Gemma model in the browser using the MediaPipe LLM Inference Web API.
+Small Vite app for text-only chat with a local Gemma model in the browser using the MediaPipe LLM Inference Web API.
 
 ## Setup
 
@@ -12,7 +12,7 @@ npm install
 
 Model files are not included in the repo. Download a browser-optimized Gemma 4 `.task` file and place it in `public/assets/`.
 
-**Recommended models** (from the Google AI Edge / LiteRT Hugging Face community):
+**Recommended text-only models** (from the Google AI Edge / LiteRT Hugging Face community):
 
 | Model | File | Link |
 |-------|------|------|
@@ -26,6 +26,12 @@ public/assets/gemma-4-E2B-it-web.task
 ```
 
 The app loads this path by default on startup. You can also use the file picker in the UI to load a different model at runtime.
+
+## Current limitation
+
+This app is currently text-only.
+
+The bundled `gemma-4-*-web.task` files used here do not provide working image input in the current MediaPipe web setup, so vision is disabled in this project for now.
 
 ## Run
 
