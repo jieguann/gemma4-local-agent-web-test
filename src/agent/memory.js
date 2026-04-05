@@ -216,7 +216,12 @@ async function postJson(url, payload) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to save memory at ${url}`);
+    let errText = response.statusText;
+    try {
+      const errPayload = await response.json();
+      if (errPayload.error) errText = errPayload.error;
+    } catch {}
+    throw new Error(`[${response.status}] ${errText}`);
   }
 }
 

@@ -37,7 +37,7 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
     },
 
     async speak(text, { voice = DEFAULT_TTS_VOICE, speed = 1 } = {}) {
-      const trimmed = String(text ?? "").trim();
+      const trimmed = String(text ?? "").replace(/\([^)]*\)/g, "").trim();
       if (!trimmed) {
         throw new Error("Nothing to speak.");
       }
@@ -81,7 +81,7 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
      */
     createStreamSpeaker({ voice = DEFAULT_TTS_VOICE, speed = 1, onReveal } = {}) {
       let spokenLength = 0;
-      let revealedText = "";
+      let currentFullText = "";
       const self = this;
 
       function resolveVoice() {
@@ -90,19 +90,26 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
         return voices.find((v) => v.name === voice) ?? null;
       }
 
-      function enqueue(text) {
-        const trimmed = text.trim();
-        if (!trimmed) return;
-        const utterance = new SpeechSynthesisUtterance(trimmed);
+      function enqueue(text, endIndex) {
+        if (!text.trim()) return;
+
+        let spokenText = text.replace(/\([^)]*\)/g, "").trim();
+        let isSilent = false;
+
+        if (!spokenText) {
+          spokenText = " ";
+          isSilent = true;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(spokenText);
         utterance.rate = speed;
+        if (isSilent) utterance.volume = 0;
+
         const matched = resolveVoice();
         if (matched) utterance.voice = matched;
 
-        // Reveal this sentence's text when speech starts
-        const textUpToHere = revealedText + (revealedText ? " " : "") + trimmed;
         utterance.addEventListener("start", () => {
-          revealedText = textUpToHere;
-          onReveal?.(revealedText);
+          onReveal?.(currentFullText.slice(0, endIndex));
         }, { once: true });
 
         speechSynthesis.speak(utterance);
@@ -111,33 +118,46 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
       return {
         /** Call with the full accumulated text on each token. */
         feed(fullText) {
+          if (fullText.length < currentFullText.length) {
+            // Text length decreased, implying a retry or reset.
+            spokenLength = 0;
+            speechSynthesis.cancel();
+          }
+          currentFullText = fullText;
           if (!self.loaded) {
             // If TTS not loaded, reveal text immediately
             onReveal?.(fullText);
             return;
           }
           const fresh = fullText.slice(spokenLength);
-          const sentences = fresh.split(/(?<=[.!?])\s+/);
-          for (let i = 0; i < sentences.length - 1; i++) {
-            enqueue(sentences[i]);
-            spokenLength += sentences[i].length + 1;
+          const regex = /(?<=[.!?])\s+/g;
+          let match;
+          let lastIndex = 0;
+          while ((match = regex.exec(fresh)) !== null) {
+            const endIndex = match.index + match[0].length;
+            const sentence = fresh.slice(lastIndex, match.index);
+            const totalSpokenNow = spokenLength + endIndex;
+            enqueue(sentence, totalSpokenNow);
+            lastIndex = endIndex;
           }
+          spokenLength += lastIndex;
         },
         /** Speak any remaining text after generation finishes. */
         flush(fullText) {
+          currentFullText = fullText;
           if (!self.loaded) {
             onReveal?.(fullText);
             return;
           }
-          const remaining = fullText.slice(spokenLength).trim();
-          if (remaining) enqueue(remaining);
+          const remaining = fullText.slice(spokenLength);
+          if (remaining.trim()) enqueue(remaining, fullText.length);
           spokenLength = fullText.length;
         },
         /** Cancel all queued speech. */
         cancel() {
           speechSynthesis.cancel();
           spokenLength = 0;
-          revealedText = "";
+          currentFullText = "";
         },
       };
     },

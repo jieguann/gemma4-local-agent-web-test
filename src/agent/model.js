@@ -13,7 +13,7 @@ export class LangChainGemmaAdapter {
     inference?.cancelProcessing?.();
   }
 
-  async invoke(messages, { onToken, allowRecovery = true } = {}) {
+  async invoke(messages, { onToken, allowRecovery = true, busyRetryCount = 0 } = {}) {
     const inference = this.getInference?.();
     if (!inference) {
       throw new Error("Load the model before starting the comedy agent.");
@@ -32,10 +32,21 @@ export class LangChainGemmaAdapter {
       return new AIMessage(cleaned);
     } catch (error) {
       const message = getErrorMessage(error);
+      if (shouldRecreateModel(message) && busyRetryCount < 2) {
+        const retryDelayMs = 350 * (busyRetryCount + 1);
+        this.onStatus?.(`The inference engine is still busy. Retrying in ${retryDelayMs}ms...`);
+        await delay(retryDelayMs);
+        return this.invoke(messages, {
+          onToken,
+          allowRecovery,
+          busyRetryCount: busyRetryCount + 1,
+        });
+      }
+
       if (allowRecovery && shouldRecreateModel(message) && this.recreateInference) {
         this.onStatus?.("The inference engine stayed busy. Recreating the model and retrying.");
         await this.recreateInference();
-        return this.invoke(messages, { onToken, allowRecovery: false });
+        return this.invoke(messages, { onToken, allowRecovery: false, busyRetryCount: 0 });
       }
 
       throw error;
@@ -52,4 +63,8 @@ function shouldRecreateModel(message) {
 
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

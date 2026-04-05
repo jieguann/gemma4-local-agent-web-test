@@ -58,6 +58,7 @@ const emojiReactions = document.querySelector("#emojiReactions");
 const reactionButtons = [...document.querySelectorAll(".reaction-btn")];
 
 const DEFAULT_MODEL_PATH = "/assets/gemma-4-E2B-it-web.task";
+const SESSION_STATE_KEY = "gemma-comedy-session";
 const BUNDLED_MODEL_LABELS = {
   "/assets/gemma-4-E2B-it-web.task": "Gemma 4 E2B Web",
   "/assets/gemma-4-E4B-it-web.task": "Gemma 4 E4B Web",
@@ -74,8 +75,12 @@ let pendingAudienceInput = null;
 let currentMoodScore = 18;
 let recentAudienceSignals = [];
 let wantsAmbientMusic = true;
+let recreateInferencePromise = null;
+let nextMessageId = 1;
+let inferenceCooldownUntil = 0;
 
 const PAUSE_BETWEEN_BITS_MS = 3000;
+const INFERENCE_COOLDOWN_MS = 650;
 const LAUGH_EMOJIS = ["😂", "🤣", "😄", "👏", "🎤"];
 
 const speechSynthesizer = createSpeechSynthesizer({
@@ -87,8 +92,7 @@ const ambientMusic = createAmbientMusic({
 
 speechSynthesis.cancel();
 setWebGpuStatus();
-setStageState("Warming up");
-setAudienceMood(18, "Audience mood: waiting", "The room is settling in.");
+restoreSessionState();
 renderConversation();
 syncUi();
 syncMusicUi();
@@ -219,6 +223,7 @@ function handleMusicVolumeChange() {
 
 function setStageState(text) {
   stageStateText.textContent = text;
+  saveSessionState();
 }
 
 function setAudienceMood(score, label, feedback) {
@@ -227,6 +232,7 @@ function setAudienceMood(score, label, feedback) {
   audienceMoodFill.style.width = `${normalized}%`;
   audienceMoodLabel.textContent = label;
   laughFeedbackText.textContent = feedback;
+  saveSessionState();
 }
 
 function setActiveReaction(reaction) {
@@ -243,6 +249,7 @@ function pushAudienceSignal(signal) {
 
   recentAudienceSignals.push(trimmed);
   recentAudienceSignals = recentAudienceSignals.slice(-6);
+  saveSessionState();
 }
 
 function evaluateLaughResponse(text) {
@@ -474,23 +481,35 @@ async function loadModel() {
 }
 
 async function recreateInference() {
+  if (recreateInferencePromise) {
+    return recreateInferencePromise;
+  }
   if (!activeModelSource) {
     throw new Error("No active model source to recreate.");
   }
 
-  llmInference?.close();
-  llmInference = await createInference(activeModelSource);
-  const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
-  comedyAgent = createComedyAgent({
-    model: new LangChainGemmaAdapter({
-      getInference: () => llmInference,
-      recreateInference,
+  recreateInferencePromise = (async () => {
+    llmInference?.close();
+    llmInference = await createInference(activeModelSource);
+    const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
+    comedyAgent = createComedyAgent({
+      model: new LangChainGemmaAdapter({
+        getInference: () => llmInference,
+        recreateInference,
+        onStatus: setStatus,
+      }),
       onStatus: setStatus,
-    }),
-    onStatus: setStatus,
-  });
-  setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
-  syncUi();
+    });
+    markInferenceCooldown();
+    setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
+    syncUi();
+  })();
+
+  try {
+    await recreateInferencePromise;
+  } finally {
+    recreateInferencePromise = null;
+  }
 }
 
 function unloadModel() {
@@ -507,6 +526,8 @@ function unloadModel() {
   comedyAgent = undefined;
   isGenerating = false;
   activeModelSource = undefined;
+  recreateInferencePromise = null;
+  inferenceCooldownUntil = 0;
   setFactStatus(modelStatus, "", "Model: not loaded");
   tokenStatus.className = "";
   tokenStatus.textContent = "Chat tokens: n/a";
@@ -546,10 +567,11 @@ function submitAudienceInput() {
   } else {
     setAudienceMood(Math.max(currentMoodScore, 55), "Audience mood: engaged", "The crowd tossed in a new angle.");
   }
-  conversation.push({ role: "user", text });
+  conversation.push(createMessage("user", text));
   promptInput.value = "";
   autoResizeTextarea();
   renderConversation();
+  saveSessionState();
 
   // If the set is paused or between bits, kick it off immediately
   if (!setRunning) {
@@ -602,10 +624,8 @@ async function startSet() {
         onToolUse: ({ tool, query, status, result }) => {
           if (status === "searching") {
             currentAssistantMessage.toolInfo = `<div class="tool-sources"><p>🔍 Searching: "${escapeHtml(query)}"...</p></div>`;
-            currentAssistantMessage.text = "";
           } else if (status === "done") {
             currentAssistantMessage.toolInfo = formatSearchSources(query, result);
-            currentAssistantMessage.text = "";
           }
           updateLastAssistantMessage(currentAssistantMessage);
         },
@@ -617,10 +637,13 @@ async function startSet() {
 let currentAssistantMessage = null;
 
 async function runOneBit(agentCall) {
-  const assistantMessage = { role: "assistant", text: "" };
+  await waitForInferenceCooldown();
+
+  const assistantMessage = createMessage("assistant", "");
   currentAssistantMessage = assistantMessage;
   conversation.push(assistantMessage);
   renderConversation();
+  saveSessionState();
 
   try {
     isGenerating = true;
@@ -630,7 +653,7 @@ async function runOneBit(agentCall) {
     const streamer = speechSynthesizer.createStreamSpeaker({
       ...getTtsOptions(),
       onReveal: (visibleText) => {
-        assistantMessage.text = visibleText;
+        assistantMessage.text = keepLongestText(assistantMessage.text, visibleText);
         updateLastAssistantMessage(assistantMessage);
       },
     });
@@ -639,7 +662,7 @@ async function runOneBit(agentCall) {
     lastAssistantReply = result.output;
     streamer.flush(result.output);
     // Ensure full text is visible after all speech finishes
-    assistantMessage.text = result.output;
+    assistantMessage.text = keepLongestText(assistantMessage.text, result.output);
     const laugh = evaluateLaughResponse(result.output);
     setStageState("Punchline landed");
     setAudienceMood(laugh.score, laugh.label, laugh.feedback);
@@ -649,9 +672,18 @@ async function runOneBit(agentCall) {
         ? `Bit delivered (used ${result.usedTools.join(", ")}). The set continues...`
         : "The set continues...",
     );
+    saveSessionState();
   } catch (error) {
-    conversation.pop();
+    if (assistantMessage.text.trim()) {
+      // Keep the partial message if it already generated something
+      assistantMessage.text += `\n\n*(Bit interrupted: ${getErrorMessage(error)})*`;
+      updateLastAssistantMessage(assistantMessage);
+    } else {
+      // Only pop if it failed before generating any text
+      conversation.pop();
+    }
     setStatus(`Bit failed: ${getErrorMessage(error)}`);
+    saveSessionState();
   } finally {
     isGenerating = false;
     currentAssistantMessage = null;
@@ -677,6 +709,7 @@ function pauseSet() {
   if (isGenerating) {
     comedyAgent?.cancel();
     llmInference?.cancelProcessing();
+    markInferenceCooldown();
   }
   setRunning = false;
   speechSynthesizer.stop();
@@ -712,6 +745,7 @@ function clearChat() {
   updatePromptTokens();
   setStatus("Chat cleared. The comedian will restart the set.");
   syncUi();
+  saveSessionState();
 
   // Restart the set from the opener
   if (comedyAgent) startSet();
@@ -774,6 +808,7 @@ function renderConversation() {
         <div class="message-body"><p>Loading the model... the comedian will start a continuous set. Just sit back and enjoy, or type something to steer the next joke!</p></div>
       </article>
     `;
+    saveSessionState();
     return;
   }
 
@@ -785,7 +820,7 @@ function renderConversation() {
       const extraClass = isStreaming ? " streaming" : "";
 
       return `
-        <article class="message ${message.role}${extraClass}">
+        <article class="message ${message.role}${extraClass}" data-message-id="${escapeHtml(String(message.id ?? ""))}">
           <p class="message-role">${escapeHtml(roleLabel)}</p>
           <div class="message-body">${formatMessageText(message)}</div>
         </article>
@@ -794,25 +829,141 @@ function renderConversation() {
     .join("");
 
   chatMessages.scrollTop = chatMessages.scrollHeight;
+  saveSessionState();
 }
 
 function updateLastAssistantMessage(message) {
-  const lastArticle = chatMessages.querySelector(".message:last-child");
-  if (!lastArticle) {
+  const messageId = message?.id;
+  if (messageId == null) {
     return;
   }
 
-  const body = lastArticle.querySelector(".message-body");
+  const targetArticle = chatMessages.querySelector(`[data-message-id="${CSS.escape(String(messageId))}"]`);
+  if (!targetArticle) {
+    return;
+  }
+
+  const body = targetArticle.querySelector(".message-body");
   if (body) {
     body.innerHTML = formatMessageText(message);
   }
 
   chatMessages.scrollTop = chatMessages.scrollHeight;
+  saveSessionState();
+}
+
+function restoreSessionState() {
+  let restored = false;
+
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_STATE_KEY);
+    if (!raw) {
+      throw new Error("No saved session");
+    }
+
+    const parsed = JSON.parse(raw);
+    conversation = Array.isArray(parsed.conversation)
+      ? parsed.conversation
+          .filter((message) => message && (message.role === "user" || message.role === "assistant"))
+          .map((message) => ({
+            id: Number.isFinite(message.id) ? message.id : nextMessageId++,
+            role: message.role,
+            text: typeof message.text === "string" ? message.text : "",
+            toolInfo: typeof message.toolInfo === "string" ? message.toolInfo : "",
+          }))
+      : [];
+    nextMessageId = conversation.reduce((maxId, message) => Math.max(maxId, Number(message.id) || 0), 0) + 1;
+    lastAssistantReply = typeof parsed.lastAssistantReply === "string" ? parsed.lastAssistantReply : "";
+    recentAudienceSignals = Array.isArray(parsed.recentAudienceSignals)
+      ? parsed.recentAudienceSignals.filter((item) => typeof item === "string").slice(-6)
+      : [];
+    wantsAmbientMusic = parsed.wantsAmbientMusic !== false;
+
+    const score = Number.isFinite(parsed.currentMoodScore) ? parsed.currentMoodScore : 18;
+    const stageText = typeof parsed.stageStateText === "string" && parsed.stageStateText.trim()
+      ? parsed.stageStateText
+      : "Warming up";
+    const moodLabel = typeof parsed.audienceMoodLabel === "string" && parsed.audienceMoodLabel.trim()
+      ? parsed.audienceMoodLabel
+      : "Audience mood: waiting";
+    const moodFeedback = typeof parsed.laughFeedbackText === "string" && parsed.laughFeedbackText.trim()
+      ? parsed.laughFeedbackText
+      : "The room is settling in.";
+
+    currentMoodScore = score;
+    stageStateText.textContent = stageText;
+    audienceMoodFill.style.width = `${Math.max(8, Math.min(100, Math.round(score)))}%`;
+    audienceMoodLabel.textContent = moodLabel;
+    laughFeedbackText.textContent = moodFeedback;
+    restored = true;
+  } catch {
+    stageStateText.textContent = "Warming up";
+    audienceMoodFill.style.width = "18%";
+    audienceMoodLabel.textContent = "Audience mood: waiting";
+    laughFeedbackText.textContent = "The room is settling in.";
+  }
+
+  return restored;
+}
+
+function saveSessionState() {
+  try {
+    window.sessionStorage.setItem(
+      SESSION_STATE_KEY,
+      JSON.stringify({
+        conversation,
+        lastAssistantReply,
+        currentMoodScore,
+        recentAudienceSignals,
+        wantsAmbientMusic,
+        stageStateText: stageStateText.textContent,
+        audienceMoodLabel: audienceMoodLabel.textContent,
+        laughFeedbackText: laughFeedbackText.textContent,
+      }),
+    );
+  } catch {
+    // Ignore storage failures so the live set keeps running.
+  }
+}
+
+function createMessage(role, text = "") {
+  return {
+    id: nextMessageId++,
+    role,
+    text,
+  };
+}
+
+function keepLongestText(currentText, nextText) {
+  const current = String(currentText ?? "");
+  const next = String(nextText ?? "");
+  return next.length >= current.length ? next : current;
+}
+
+function markInferenceCooldown(durationMs = INFERENCE_COOLDOWN_MS) {
+  inferenceCooldownUntil = Math.max(inferenceCooldownUntil, Date.now() + durationMs);
+}
+
+async function waitForInferenceCooldown() {
+  const remainingMs = inferenceCooldownUntil - Date.now();
+  if (remainingMs > 0) {
+    setStatus("Giving the model a moment to settle before the next bit...");
+    await delay(remainingMs);
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function updatePromptTokens() {
   if (!llmInference) {
     tokenStatus.textContent = "Chat tokens: n/a";
+    return;
+  }
+
+  if (isGenerating || recreateInferencePromise) {
+    tokenStatus.textContent = "Chat tokens: busy";
     return;
   }
 

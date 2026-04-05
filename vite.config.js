@@ -23,6 +23,11 @@ const DEFAULT_HISTORY = {
 };
 
 export default defineConfig({
+  server: {
+    watch: {
+      ignored: ["**/memory/**"],
+    },
+  },
   plugins: [localAgentApiPlugin()],
 });
 
@@ -153,8 +158,15 @@ async function fetchWikipedia(query) {
   }));
 }
 
+let memoryDirPromise = null;
 async function ensureMemoryDir() {
-  await fs.mkdir(MEMORY_DIR, { recursive: true });
+  if (!memoryDirPromise) {
+    memoryDirPromise = fs.mkdir(MEMORY_DIR, { recursive: true }).catch((err) => {
+      memoryDirPromise = null;
+      throw err;
+    });
+  }
+  return memoryDirPromise;
 }
 
 async function readJsonFile(filePath, fallback) {
