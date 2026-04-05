@@ -1,6 +1,7 @@
 import { FilesetResolver, LlmInference } from "@mediapipe/tasks-genai";
 import "./styles.css";
 import { createSpeechSynthesizer, DEFAULT_TTS_VOICE } from "./tts.js";
+import { createAmbientMusic } from "./music.js";
 import { COMEDY_SYSTEM_PROMPT } from "./agent/prompting.js";
 
 // LangChain agent modules are loaded lazily after the model is ready
@@ -42,6 +43,8 @@ const speakLastButton = document.querySelector("#speakLastButton");
 const ttsVoiceSelect = document.querySelector("#ttsVoiceSelect");
 const ttsSpeedInput = document.querySelector("#ttsSpeed");
 const autoSpeakCheckbox = document.querySelector("#autoSpeak");
+const toggleMusicButton = document.querySelector("#toggleMusicButton");
+const musicVolumeInput = document.querySelector("#musicVolume");
 const chatMessages = document.querySelector("#chatMessages");
 const generatingIndicator = document.querySelector("#generatingIndicator");
 const attachImageButton = document.querySelector("#attachImageButton");
@@ -70,11 +73,15 @@ let setRunning = false;
 let pendingAudienceInput = null;
 let currentMoodScore = 18;
 let recentAudienceSignals = [];
+let wantsAmbientMusic = true;
 
 const PAUSE_BETWEEN_BITS_MS = 3000;
 const LAUGH_EMOJIS = ["😂", "🤣", "😄", "👏", "🎤"];
 
 const speechSynthesizer = createSpeechSynthesizer({
+  onStatus: setStatus,
+});
+const ambientMusic = createAmbientMusic({
   onStatus: setStatus,
 });
 
@@ -84,8 +91,10 @@ setStageState("Warming up");
 setAudienceMood(18, "Audience mood: waiting", "The room is settling in.");
 renderConversation();
 syncUi();
+syncMusicUi();
 hideImageUi();
 autoSpeakCheckbox.checked = true;
+attemptAutoStartMusic();
 preloadTts().then(() => loadModel());
 
 loadModelButton.addEventListener("click", loadModel);
@@ -96,6 +105,8 @@ clearChatButton.addEventListener("click", clearChat);
 loadTtsButton.addEventListener("click", preloadTts);
 stopTtsButton.addEventListener("click", stopTtsPlayback);
 speakLastButton.addEventListener("click", speakLastReply);
+toggleMusicButton.addEventListener("click", toggleMusic);
+musicVolumeInput.addEventListener("input", handleMusicVolumeChange);
 for (const button of reactionButtons) {
   button.addEventListener("click", () => applyEmojiReaction(button.dataset.reaction, button.dataset.emoji));
 }
@@ -127,6 +138,47 @@ function autoResizeTextarea() {
   promptInput.style.height = `${Math.min(promptInput.scrollHeight, 160)}px`;
 }
 
+function syncMusicUi() {
+  toggleMusicButton.textContent = ambientMusic.playing ? "Pause music" : "Play music";
+}
+
+function installAutoplayRetry() {
+  const retry = async () => {
+    if (!wantsAmbientMusic || ambientMusic.playing) {
+      return;
+    }
+
+    try {
+      await ambientMusic.play();
+    } catch {
+      return;
+    } finally {
+      syncMusicUi();
+    }
+
+    window.removeEventListener("pointerdown", retry);
+    window.removeEventListener("keydown", retry);
+  };
+
+  window.addEventListener("pointerdown", retry, { once: true });
+  window.addEventListener("keydown", retry, { once: true });
+}
+
+async function attemptAutoStartMusic() {
+  if (!wantsAmbientMusic) {
+    return;
+  }
+
+  try {
+    await ambientMusic.play();
+  } catch {
+    setStatus("Ambient music is ready. Press Play music or interact once to start it.");
+    installAutoplayRetry();
+  } finally {
+    syncMusicUi();
+  }
+}
+
 function setWebGpuStatus() {
   // Only check if the API exists — don't call requestAdapter() here
   // because MediaPipe will request its own adapter during model load,
@@ -143,6 +195,26 @@ function setWebGpuStatus() {
 function setFactStatus(element, level, text) {
   element.className = level;
   element.textContent = text;
+}
+
+async function toggleMusic() {
+  try {
+    if (ambientMusic.playing) {
+      wantsAmbientMusic = false;
+      ambientMusic.pause();
+    } else {
+      wantsAmbientMusic = true;
+      await ambientMusic.play();
+    }
+  } catch (error) {
+    setStatus(`Music failed: ${getErrorMessage(error)}`);
+  } finally {
+    syncMusicUi();
+  }
+}
+
+function handleMusicVolumeChange() {
+  ambientMusic.setVolume(readFloat(musicVolumeInput, 0.18));
 }
 
 function setStageState(text) {
@@ -425,6 +497,7 @@ function unloadModel() {
   setRunning = false;
   pendingAudienceInput = null;
   speechSynthesizer.stop();
+  ambientMusic.pause();
 
   if (llmInference) {
     llmInference.close();
@@ -628,6 +701,7 @@ function clearChat() {
   setRunning = false;
   pendingAudienceInput = null;
   speechSynthesizer.stop();
+  ambientMusic.pause();
   conversation = [];
   lastAssistantReply = "";
   recentAudienceSignals = [];
@@ -797,8 +871,11 @@ function syncUi() {
   ttsVoiceSelect.disabled = isGenerating;
   ttsSpeedInput.disabled = isGenerating;
   autoSpeakCheckbox.disabled = isGenerating;
+  toggleMusicButton.disabled = false;
+  musicVolumeInput.disabled = false;
   attachImageButton.disabled = true;
   attachImageButton.title = "Agent mode is text-only";
+  syncMusicUi();
 }
 
 function setStatus(message) {

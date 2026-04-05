@@ -25,6 +25,7 @@ Place a Gemma Web model in `public/assets/`:
 - Stores audience profile + joke history in local `memory/*.json`
 - Uses web search when a bit needs current context
 - Speaks finished bits through browser `speechSynthesis`
+- Plays a built-in ambient background track with pause and volume controls
 - Shows stage feedback in the UI:
   - stage state
   - audience mood meter
@@ -53,6 +54,14 @@ The current TTS path uses the browser's built-in `speechSynthesis` API.
 - `Load TTS` initializes available local/system voices
 - `Speak last reply` replays the latest bit
 - `Auto-speak each finished bit` reads each completed bit aloud
+
+## Ambient Music
+
+The app includes a built-in Web Audio ambient layer.
+
+- `Play music` starts a gentle generated background loop
+- `Pause music` stops it immediately
+- the volume slider adjusts the room ambience without affecting speech controls
 
 ## Audience Feedback
 
