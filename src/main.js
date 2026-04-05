@@ -47,6 +47,12 @@ const generatingIndicator = document.querySelector("#generatingIndicator");
 const attachImageButton = document.querySelector("#attachImageButton");
 const imagePreview = document.querySelector("#imagePreview");
 const ttsStatus = document.querySelector("#ttsStatus");
+const stageStateText = document.querySelector("#stageStateText");
+const audienceMoodLabel = document.querySelector("#audienceMoodLabel");
+const audienceMoodFill = document.querySelector("#audienceMoodFill");
+const laughFeedbackText = document.querySelector("#laughFeedbackText");
+const emojiReactions = document.querySelector("#emojiReactions");
+const reactionButtons = [...document.querySelectorAll(".reaction-btn")];
 
 const DEFAULT_MODEL_PATH = "/assets/gemma-4-E2B-it-web.task";
 const BUNDLED_MODEL_LABELS = {
@@ -60,6 +66,13 @@ let isGenerating = false;
 let activeModelSource;
 let conversation = [];
 let lastAssistantReply = "";
+let setRunning = false;
+let pendingAudienceInput = null;
+let currentMoodScore = 18;
+let recentAudienceSignals = [];
+
+const PAUSE_BETWEEN_BITS_MS = 3000;
+const LAUGH_EMOJIS = ["😂", "🤣", "😄", "👏", "🎤"];
 
 const speechSynthesizer = createSpeechSynthesizer({
   onStatus: setStatus,
@@ -67,6 +80,8 @@ const speechSynthesizer = createSpeechSynthesizer({
 
 speechSynthesis.cancel();
 setWebGpuStatus();
+setStageState("Warming up");
+setAudienceMood(18, "Audience mood: waiting", "The room is settling in.");
 renderConversation();
 syncUi();
 hideImageUi();
@@ -75,18 +90,21 @@ preloadTts().then(() => loadModel());
 
 loadModelButton.addEventListener("click", loadModel);
 unloadModelButton.addEventListener("click", unloadModel);
-runButton.addEventListener("click", handleSendMessage);
-cancelButton.addEventListener("click", cancelGeneration);
+runButton.addEventListener("click", submitAudienceInput);
+cancelButton.addEventListener("click", toggleSet);
 clearChatButton.addEventListener("click", clearChat);
 loadTtsButton.addEventListener("click", preloadTts);
 stopTtsButton.addEventListener("click", stopTtsPlayback);
 speakLastButton.addEventListener("click", speakLastReply);
+for (const button of reactionButtons) {
+  button.addEventListener("click", () => applyEmojiReaction(button.dataset.reaction, button.dataset.emoji));
+}
 promptInput.addEventListener("input", updatePromptTokens);
 promptInput.addEventListener("input", autoResizeTextarea);
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    handleSendMessage();
+    submitAudienceInput();
   }
 });
 
@@ -125,6 +143,198 @@ function setWebGpuStatus() {
 function setFactStatus(element, level, text) {
   element.className = level;
   element.textContent = text;
+}
+
+function setStageState(text) {
+  stageStateText.textContent = text;
+}
+
+function setAudienceMood(score, label, feedback) {
+  const normalized = Math.max(8, Math.min(100, Math.round(score)));
+  currentMoodScore = normalized;
+  audienceMoodFill.style.width = `${normalized}%`;
+  audienceMoodLabel.textContent = label;
+  laughFeedbackText.textContent = feedback;
+}
+
+function setActiveReaction(reaction) {
+  for (const button of reactionButtons) {
+    button.classList.toggle("active", button.dataset.reaction === reaction);
+  }
+}
+
+function pushAudienceSignal(signal) {
+  const trimmed = String(signal ?? "").trim();
+  if (!trimmed) {
+    return;
+  }
+
+  recentAudienceSignals.push(trimmed);
+  recentAudienceSignals = recentAudienceSignals.slice(-6);
+}
+
+function evaluateLaughResponse(text) {
+  const source = String(text ?? "");
+  const lowered = source.toLowerCase();
+  let score = 34 + Math.min(18, Math.floor(source.length / 22));
+
+  if (/[!?]{2,}/.test(source)) score += 10;
+  if (/callback|crowd|heckle|trend|banana|stage|punchline/.test(lowered)) score += 8;
+  if (/why|because|like|basically|imagine|it's like/.test(lowered)) score += 7;
+  if (/(absurd|ridiculous|chaos|insane|wild)/.test(lowered)) score += 6;
+
+  const label =
+    score >= 78 ? "Audience mood: big laugh" :
+    score >= 60 ? "Audience mood: strong chuckle" :
+    score >= 42 ? "Audience mood: warm grin" :
+    "Audience mood: polite smile";
+  const feedback =
+    score >= 78 ? "Big laugh. The room leans in for the next tag." :
+    score >= 60 ? "Solid laugh. The bit has momentum." :
+    score >= 42 ? "A few chuckles ripple through the room." :
+    "The crowd is listening, but the next line needs a sharper punch.";
+
+  return {
+    score,
+    label,
+    feedback,
+    burstCount: score >= 78 ? 6 : score >= 60 ? 4 : score >= 42 ? 3 : 2,
+  };
+}
+
+function triggerLaughBurst(count) {
+  if (!emojiReactions) {
+    return;
+  }
+
+  const safeCount = Math.max(1, Math.min(8, count));
+  for (let i = 0; i < safeCount; i += 1) {
+    const particle = document.createElement("span");
+    particle.className = "emoji-particle";
+    particle.textContent = LAUGH_EMOJIS[(Math.random() * LAUGH_EMOJIS.length) | 0];
+    particle.style.left = `${Math.round((Math.random() - 0.5) * 180)}px`;
+    particle.style.animationDelay = `${(Math.random() * 0.25).toFixed(2)}s`;
+    emojiReactions.appendChild(particle);
+    particle.addEventListener("animationend", () => particle.remove(), { once: true });
+  }
+}
+
+function triggerSpecificEmojiBurst(emoji, count = 3) {
+  if (!emojiReactions || !emoji) {
+    return;
+  }
+
+  const safeCount = Math.max(1, Math.min(6, count));
+  for (let i = 0; i < safeCount; i += 1) {
+    const particle = document.createElement("span");
+    particle.className = "emoji-particle";
+    particle.textContent = emoji;
+    particle.style.left = `${Math.round((Math.random() - 0.5) * 150)}px`;
+    particle.style.animationDelay = `${(Math.random() * 0.18).toFixed(2)}s`;
+    emojiReactions.appendChild(particle);
+    particle.addEventListener("animationend", () => particle.remove(), { once: true });
+  }
+}
+
+function getMoodPresentation(score, overrideFeedback) {
+  return {
+    label:
+      score >= 78 ? "Audience mood: big laugh" :
+      score >= 60 ? "Audience mood: strong chuckle" :
+      score >= 42 ? "Audience mood: warm grin" :
+      "Audience mood: polite smile",
+    feedback:
+      overrideFeedback || (
+        score >= 78 ? "Big laugh. The room leans in for the next tag." :
+        score >= 60 ? "Solid laugh. The bit has momentum." :
+        score >= 42 ? "A few chuckles ripple through the room." :
+        "The crowd is listening, but the next line needs a sharper punch."
+      ),
+  };
+}
+
+function applyMoodDelta(delta, feedback, reaction, emoji) {
+  const nextScore = Math.max(8, Math.min(100, currentMoodScore + delta));
+  const presentation = getMoodPresentation(nextScore, feedback);
+  setAudienceMood(nextScore, presentation.label, presentation.feedback);
+  if (reaction) {
+    setActiveReaction(reaction);
+  }
+  if (emoji) {
+    triggerSpecificEmojiBurst(emoji, Math.max(2, Math.round(Math.abs(delta) / 6)));
+  }
+}
+
+function applyEmojiReaction(reaction, emoji) {
+  const reactionMap = {
+    love: { delta: 18, feedback: "The room erupts. That one really hit.", signal: "Audience reaction: huge laugh, keep pushing this angle." },
+    laugh: { delta: 12, feedback: "Nice laugh. The audience wants another tag.", signal: "Audience reaction: strong laugh, a callback could land." },
+    smile: { delta: 6, feedback: "Warm response. The room is with the comic.", signal: "Audience reaction: warm smile, the crowd is with you." },
+    groan: { delta: -8, feedback: "A playful groan. The room wants a sharper turn.", signal: "Audience reaction: playful groan, pivot or sharpen the bit." },
+    bomb: { delta: -16, feedback: "That one thudded. Time to pivot fast.", signal: "Audience reaction: that bombed, recover quickly with a new angle." },
+  };
+  const selected = reactionMap[reaction];
+  if (!selected) {
+    return;
+  }
+
+  pushAudienceSignal(selected.signal);
+  applyMoodDelta(selected.delta, selected.feedback, reaction, emoji);
+}
+
+function analyzeAudienceTextFeedback(text) {
+  const source = String(text ?? "").trim();
+  const lowered = source.toLowerCase();
+  let delta = 0;
+  let feedback = "";
+
+  if (!source) {
+    return null;
+  }
+
+  if (/(love that|so funny|hilarious|amazing|killed|nailed it|that was great|🤣|😂|lmao|lol)/.test(lowered)) {
+    delta += 14;
+    feedback = "The audience text says the bit landed hard.";
+  } else if (/(good one|funny|nice|pretty good|more like that|keep going)/.test(lowered)) {
+    delta += 8;
+    feedback = "The audience text gives the comic a real push.";
+  }
+
+  if (/(meh|not funny|weak|too much|too dark|too mean|bombed|bad joke|cringe)/.test(lowered)) {
+    delta -= 14;
+    feedback = "The audience text says the bit missed and needs a pivot.";
+  } else if (/(okay|fine|hmm|maybe|not sure)/.test(lowered)) {
+    delta -= 5;
+    feedback = feedback || "The audience sounds unconvinced.";
+  }
+
+  if (/(i like|more of|talk about|do one about|joke about)/.test(lowered)) {
+    delta += 4;
+    feedback = feedback || "The audience is feeding the act with more material.";
+  }
+
+  if (!delta) {
+    delta = /(thanks|hello|hi)/.test(lowered) ? 2 : 0;
+    feedback = feedback || (delta ? "The audience is lightly engaged." : "");
+  }
+
+  return delta ? { delta, feedback, signal: `Audience text feedback: ${source.slice(0, 120)}` } : null;
+}
+
+function celebrateBitLanding(score) {
+  const lastArticle = chatMessages.querySelector(".message.assistant:last-child");
+  if (lastArticle) {
+    lastArticle.classList.remove("joke-landed");
+    void lastArticle.offsetWidth;
+    lastArticle.classList.add("joke-landed");
+  }
+
+  const burstCount =
+    score >= 78 ? 6 :
+    score >= 60 ? 4 :
+    score >= 42 ? 3 :
+    2;
+  triggerLaughBurst(burstCount);
 }
 
 async function loadModel() {
@@ -173,11 +383,13 @@ async function loadModel() {
 
     setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
     setStatus("Model loaded. The comedian is taking the stage...");
+    setStageState("Opening set");
+    setAudienceMood(26, "Audience mood: settling in", "The mic is hot and the room is ready.");
     updatePromptTokens();
     syncUi();
 
-    // Auto-open the set — the comedian starts without waiting for the user
-    await runOpener();
+    // Start the continuous comedy set
+    startSet();
   } catch (error) {
     setFactStatus(modelStatus, "error", "Model: failed to load");
     setStatus(`Load failed: ${getErrorMessage(error)}`);
@@ -210,6 +422,10 @@ async function recreateInference() {
 }
 
 function unloadModel() {
+  setRunning = false;
+  pendingAudienceInput = null;
+  speechSynthesizer.stop();
+
   if (llmInference) {
     llmInference.close();
     llmInference = undefined;
@@ -242,63 +458,94 @@ async function createInference(modelSource) {
   });
 }
 
-async function runOpener() {
-  if (!comedyAgent || isGenerating) return;
+// ── Audience input ──
+// The user types something and hits send; it gets queued for the next bit.
+function submitAudienceInput() {
+  const text = promptInput.value.trim();
+  if (!text) return;
 
-  const assistantMessage = { role: "assistant", text: "" };
-  conversation.push(assistantMessage);
+  pendingAudienceInput = text;
+  setStageState("Taking audience suggestion");
+  const textReaction = analyzeAudienceTextFeedback(text);
+  if (textReaction) {
+    pushAudienceSignal(textReaction.signal);
+    applyMoodDelta(textReaction.delta, textReaction.feedback, null, textReaction.delta > 0 ? "💬" : "😶");
+  } else {
+    setAudienceMood(Math.max(currentMoodScore, 55), "Audience mood: engaged", "The crowd tossed in a new angle.");
+  }
+  conversation.push({ role: "user", text });
+  promptInput.value = "";
+  autoResizeTextarea();
   renderConversation();
 
-  try {
-    isGenerating = true;
-    generatingIndicator.classList.add("active");
-    syncUi();
-
-    const streamer = speechSynthesizer.createStreamSpeaker(getTtsOptions());
-
-    const result = await comedyAgent.opener({
-      onToken: (partialText) => {
-        assistantMessage.text = partialText;
-        updateLastAssistantMessage(assistantMessage);
-        streamer.feed(partialText);
-      },
-    });
-
-    assistantMessage.text = result.output;
-    lastAssistantReply = result.output;
-    streamer.flush(result.output);
-    setStatus("The set is live! Say something back — react, heckle, or give a topic.");
-  } catch (error) {
-    conversation.pop();
-    setStatus(`Opener failed: ${getErrorMessage(error)}`);
-  } finally {
-    isGenerating = false;
-    generatingIndicator.classList.remove("active");
-    renderConversation();
-    updatePromptTokens();
-    syncUi();
-    promptInput.focus();
+  // If the set is paused or between bits, kick it off immediately
+  if (!setRunning) {
+    startSet();
   }
 }
 
-async function handleSendMessage() {
-  if (!llmInference || !comedyAgent || isGenerating) {
-    return;
+// ── Set loop ──
+// The comedian keeps going: opener → bit → bit → bit...
+// Between bits, checks if the user said something. If so, uses it.
+// If not, freestyles the next bit.
+
+async function startSet() {
+  if (setRunning || !comedyAgent) return;
+  setRunning = true;
+  setStageState("Performing");
+  syncUi();
+
+  // If no conversation yet, open the set first
+  if (!conversation.some((m) => m.role === "assistant")) {
+    await runOneBit(async (streamer) => {
+      setStageState("Opening set");
+      return comedyAgent.opener({
+        onToken: (partialText) => {
+          streamer.feed(partialText);
+        },
+      });
+    });
   }
 
-  const prompt = promptInput.value.trim();
-  if (!prompt) {
-    setStatus("Enter a prompt so the comedy agent has something to riff on.");
-    return;
+  // Main set loop
+  while (setRunning && comedyAgent) {
+    // Wait between bits (but check for pause)
+    await waitBetweenBits();
+    if (!setRunning) break;
+
+    // Grab any pending audience input
+    const userInput = pendingAudienceInput;
+    pendingAudienceInput = null;
+    setStageState(userInput ? "Working the crowd" : "Building next bit");
+
+    await runOneBit(async (streamer) => {
+      return comedyAgent.nextBit({
+        userInput: userInput || null,
+        audienceSignals: [...recentAudienceSignals],
+        conversation: [...conversation],
+        onToken: (partialText) => {
+          streamer.feed(partialText);
+        },
+        onToolUse: ({ tool, query, status, result }) => {
+          if (status === "searching") {
+            currentAssistantMessage.toolInfo = `<div class="tool-sources"><p>🔍 Searching: "${escapeHtml(query)}"...</p></div>`;
+            currentAssistantMessage.text = "";
+          } else if (status === "done") {
+            currentAssistantMessage.toolInfo = formatSearchSources(query, result);
+            currentAssistantMessage.text = "";
+          }
+          updateLastAssistantMessage(currentAssistantMessage);
+        },
+      });
+    });
   }
+}
 
-  const userMessage = { role: "user", text: prompt };
-  const conversationSnapshot = [...conversation, userMessage];
-  conversation.push(userMessage);
-  promptInput.value = "";
-  autoResizeTextarea();
+let currentAssistantMessage = null;
 
+async function runOneBit(agentCall) {
   const assistantMessage = { role: "assistant", text: "" };
+  currentAssistantMessage = assistantMessage;
   conversation.push(assistantMessage);
   renderConversation();
 
@@ -306,73 +553,94 @@ async function handleSendMessage() {
     isGenerating = true;
     generatingIndicator.classList.add("active");
     syncUi();
-    setStatus("The comedy agent is warming up...");
 
-    const streamer = speechSynthesizer.createStreamSpeaker(getTtsOptions());
-
-    const result = await comedyAgent.run(prompt, {
-      conversation: conversationSnapshot,
-      onToken: (partialText) => {
-        assistantMessage.text = partialText;
-        updateLastAssistantMessage(assistantMessage);
-        streamer.feed(partialText);
-      },
-      onToolUse: ({ tool, query, status, result }) => {
-        if (status === "searching") {
-          assistantMessage.toolInfo = `<div class="tool-sources"><p>🔍 Searching: "${escapeHtml(query)}"...</p></div>`;
-          assistantMessage.text = "";
-        } else if (status === "done") {
-          assistantMessage.toolInfo = formatSearchSources(query, result);
-          assistantMessage.text = "";
-        }
+    const streamer = speechSynthesizer.createStreamSpeaker({
+      ...getTtsOptions(),
+      onReveal: (visibleText) => {
+        assistantMessage.text = visibleText;
         updateLastAssistantMessage(assistantMessage);
       },
     });
+    const result = await agentCall(streamer);
 
-    assistantMessage.text = result.output;
     lastAssistantReply = result.output;
     streamer.flush(result.output);
+    // Ensure full text is visible after all speech finishes
+    assistantMessage.text = result.output;
+    const laugh = evaluateLaughResponse(result.output);
+    setStageState("Punchline landed");
+    setAudienceMood(laugh.score, laugh.label, laugh.feedback);
+    celebrateBitLanding(laugh.score);
     setStatus(
-      result.usedTools.length
-        ? `Generation finished. Tools used: ${result.usedTools.join(", ")}.`
-        : "Generation finished.",
+      result.usedTools?.length
+        ? `Bit delivered (used ${result.usedTools.join(", ")}). The set continues...`
+        : "The set continues...",
     );
   } catch (error) {
     conversation.pop();
-    conversation.pop();
-    promptInput.value = prompt;
-    autoResizeTextarea();
-    setStatus(`Generation failed: ${getErrorMessage(error)}`);
+    setStatus(`Bit failed: ${getErrorMessage(error)}`);
   } finally {
     isGenerating = false;
+    currentAssistantMessage = null;
     generatingIndicator.classList.remove("active");
     renderConversation();
     updatePromptTokens();
     syncUi();
-    promptInput.focus();
   }
 }
 
-function cancelGeneration() {
-  if (!llmInference || !isGenerating) {
-    return;
-  }
+function waitBetweenBits() {
+  return new Promise((resolve) => {
+    // If user already has something queued, skip the wait
+    if (pendingAudienceInput) {
+      resolve();
+      return;
+    }
+    setTimeout(resolve, PAUSE_BETWEEN_BITS_MS);
+  });
+}
 
-  comedyAgent?.cancel();
-  llmInference.cancelProcessing();
-  setStatus("Cancel requested. The current generation will stop when the runtime allows it.");
+function pauseSet() {
+  if (isGenerating) {
+    comedyAgent?.cancel();
+    llmInference?.cancelProcessing();
+  }
+  setRunning = false;
+  speechSynthesizer.stop();
+  setStageState("Paused");
+  setAudienceMood(22, "Audience mood: paused", "The comic is holding for the next cue.");
+  setActiveReaction(null);
+  setStatus("Set paused. Type something or click Resume to continue.");
+  syncUi();
+}
+
+function toggleSet() {
+  if (setRunning) {
+    pauseSet();
+  } else if (comedyAgent) {
+    startSet();
+  }
 }
 
 function clearChat() {
-  if (isGenerating) {
-    return;
-  }
+  if (isGenerating) return;
 
+  setRunning = false;
+  pendingAudienceInput = null;
+  speechSynthesizer.stop();
   conversation = [];
   lastAssistantReply = "";
+  recentAudienceSignals = [];
+  setStageState("Resetting set");
+  setAudienceMood(20, "Audience mood: resetting", "Fresh crowd, fresh opener.");
+  setActiveReaction(null);
   renderConversation();
   updatePromptTokens();
-  setStatus("Chat history cleared. Saved memory files stay on disk until you remove them.");
+  setStatus("Chat cleared. The comedian will restart the set.");
+  syncUi();
+
+  // Restart the set from the opener
+  if (comedyAgent) startSet();
 }
 
 async function preloadTts() {
@@ -429,7 +697,7 @@ function renderConversation() {
     chatMessages.innerHTML = `
       <article class="message assistant">
         <p class="message-role">Gemma Comedy Agent</p>
-        <div class="message-body"><p>Loading the model... the comedian will open the set automatically. Then just talk back — react, heckle, ask for more, or throw out a new topic!</p></div>
+        <div class="message-body"><p>Loading the model... the comedian will start a continuous set. Just sit back and enjoy, or type something to steer the next joke!</p></div>
       </article>
     `;
     return;
@@ -507,21 +775,25 @@ function syncUi() {
   const modelLoaded = Boolean(llmInference);
   const hasReplyToSpeak = Boolean(lastAssistantReply.trim());
 
-  loadModelButton.disabled = isGenerating;
+  loadModelButton.disabled = isGenerating || setRunning;
   unloadModelButton.disabled = !modelLoaded || isGenerating;
-  runButton.disabled = !modelLoaded || isGenerating;
-  cancelButton.disabled = !modelLoaded || !isGenerating;
+  // Send button: always enabled when model is loaded (queues input for next bit)
+  runButton.disabled = !modelLoaded;
+  // Cancel button becomes Pause/Resume
+  cancelButton.disabled = !modelLoaded;
+  cancelButton.textContent = setRunning ? "Pause" : "Resume";
   clearChatButton.disabled = isGenerating;
   loadTtsButton.disabled = isGenerating;
   stopTtsButton.disabled = !speechSynthesizer.loaded;
   speakLastButton.disabled = isGenerating || !hasReplyToSpeak;
-  modelFileInput.disabled = isGenerating;
-  bundledModelSelect.disabled = isGenerating;
+  modelFileInput.disabled = isGenerating || setRunning;
+  bundledModelSelect.disabled = isGenerating || setRunning;
   maxTokensInput.disabled = modelLoaded || isGenerating;
   topKInput.disabled = modelLoaded || isGenerating;
   temperatureInput.disabled = modelLoaded || isGenerating;
   randomSeedInput.disabled = modelLoaded || isGenerating;
-  promptInput.disabled = !modelLoaded || isGenerating;
+  // Prompt input: always enabled so user can type while agent is performing
+  promptInput.disabled = !modelLoaded;
   ttsVoiceSelect.disabled = isGenerating;
   ttsSpeedInput.disabled = isGenerating;
   autoSpeakCheckbox.disabled = isGenerating;

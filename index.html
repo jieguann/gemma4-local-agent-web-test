@@ -135,6 +135,30 @@
             </div>
           </div>
 
+          <div class="stage-hud">
+            <div class="stage-status">
+              <span class="stage-status-label">Stage</span>
+              <strong id="stageStateText">Warming up</strong>
+            </div>
+            <div class="audience-mood">
+              <span id="audienceMoodLabel">Audience mood: waiting</span>
+              <div class="mood-bar" aria-hidden="true">
+                <div id="audienceMoodFill" class="mood-fill"></div>
+              </div>
+            </div>
+            <p id="laughFeedbackText" class="laugh-feedback">The room is settling in.</p>
+            <div class="reaction-strip">
+              <span class="reaction-strip-label">Quick reaction</span>
+              <div class="reaction-buttons">
+                <button class="reaction-btn" type="button" data-reaction="love" data-emoji="🤣" title="Huge laugh">🤣</button>
+                <button class="reaction-btn" type="button" data-reaction="laugh" data-emoji="😂" title="Laugh">😂</button>
+                <button class="reaction-btn" type="button" data-reaction="smile" data-emoji="🙂" title="Warm smile">🙂</button>
+                <button class="reaction-btn" type="button" data-reaction="groan" data-emoji="😬" title="Groan">😬</button>
+                <button class="reaction-btn" type="button" data-reaction="bomb" data-emoji="🫠" title="That bombed">🫠</button>
+              </div>
+            </div>
+          </div>
+
           <div id="chatMessages" class="chat-messages">
             <article class="message assistant">
               <p class="message-role">Gemma</p>
@@ -146,6 +170,8 @@
             <span class="generating-dots"><span></span><span></span><span></span></span>
             Gemma is thinking...
           </div>
+
+          <div id="emojiReactions" class="emoji-reactions" aria-hidden="true"></div>
 
           <div id="imagePreview" class="image-preview hidden"></div>
 

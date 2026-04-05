@@ -1,11 +1,13 @@
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { loadAgentMemory, saveAgentMemory, buildMemoryContext, updateMemoryFromTurn } from "./memory.js";
 import {
+  COMEDY_AUTOPLAY_PROMPT,
   COMEDY_CONTINUE_PROMPT,
   COMEDY_OPENER_PROMPT,
   COMEDY_PLANNER_PROMPT,
   COMEDY_RENDER_PROMPT,
   COMEDY_SYSTEM_PROMPT,
+  COMEDY_TOOL_DECISION_PROMPT,
   coerceShortParagraph,
   formatComedyPlan,
   formatRecentConversation,
@@ -13,6 +15,7 @@ import {
   isInteractiveMode,
   normalizeMessageContent,
   parseComedyPlan,
+  stripControlTokens,
 } from "./prompting.js";
 import { buildToolMap, createAgentTools } from "./tools.js";
 
@@ -20,10 +23,90 @@ export function createComedyAgent({ model, onStatus }) {
   const tools = createAgentTools();
   const toolMap = buildToolMap(tools);
 
+  function formatAudienceSignals(signals = []) {
+    if (!Array.isArray(signals) || signals.length === 0) {
+      return "No fresh audience reaction signals.";
+    }
+
+    return signals
+      .slice(-4)
+      .map((signal) => `- ${String(signal).trim()}`)
+      .join("\n");
+  }
+
+  /**
+   * Autonomously decide whether to search, execute the tool if so,
+   * and return the search context string.
+   */
+  async function autonomousToolStep({ topic, memoryContext, onToolUse }) {
+    const usedTools = [];
+    let searchContext = "No external facts gathered.";
+
+    try {
+      onStatus?.("Deciding if I need to look something up...");
+      const decisionPrompt = await ChatPromptTemplate.fromMessages([
+        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_TOOL_DECISION_PROMPT}`],
+        ["human", "Next topic/context: {topic}\nAudience: {memoryContext}\n\nDo you need to search?"],
+      ]).formatMessages({ topic, memoryContext });
+
+      const decisionResult = await model.invoke(decisionPrompt);
+      const decision = stripControlTokens(normalizeMessageContent(decisionResult.content));
+
+      const actionMatch = decision.match(/^ACTION:\s*web_search\(\s*\{[\s\S]*?"query"\s*:\s*"([^"]+)"[\s\S]*?\}\s*\)/m);
+      if (actionMatch) {
+        const query = actionMatch[1];
+        onStatus?.(`Searching: "${query}"...`);
+        onToolUse?.({ tool: "web_search", query, status: "searching" });
+
+        const searchTool = toolMap.get("web_search");
+        if (searchTool) {
+          const searchResult = await searchTool.invoke({ query });
+          usedTools.push("web_search");
+          onToolUse?.({ tool: "web_search", query, status: "done", result: searchResult });
+          searchContext = searchResult
+            .split("\n")
+            .slice(0, 3)
+            .map((line) => line.slice(0, 160))
+            .join("\n");
+        }
+      }
+    } catch {
+      searchContext = "Search skipped.";
+    }
+
+    return { searchContext, usedTools };
+  }
+
+  /**
+   * Plan + render a joke on a given topic.
+   */
+  async function planAndRender({ topic, mode, memoryContext, searchContext, onToken }) {
+    onStatus?.("Shaping the premise and punchline...");
+    const planPrompt = await ChatPromptTemplate.fromMessages([
+      ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_PLANNER_PROMPT}`],
+      ["human", "Topic: {topic}\nMode: {mode}\nAudience: {memoryContext}\nFacts: {searchContext}"],
+    ]).formatMessages({ topic, mode, memoryContext, searchContext });
+
+    const planResult = await model.invoke(planPrompt);
+    const comedyPlan = parseComedyPlan(normalizeMessageContent(planResult.content));
+
+    onStatus?.("Performing the bit...");
+    const renderPrompt = await ChatPromptTemplate.fromMessages([
+      ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_RENDER_PROMPT}`],
+      ["human", "Topic: {topic}\nBlueprint:\n{comedyPlan}\nFacts: {searchContext}\n\nOne short paragraph. End with a question or tease to keep the show going."],
+    ]).formatMessages({
+      topic,
+      comedyPlan: formatComedyPlan(comedyPlan),
+      searchContext,
+    });
+
+    const finalResult = await model.invoke(renderPrompt, { onToken });
+    return coerceShortParagraph(normalizeMessageContent(finalResult.content));
+  }
+
   return {
     /**
-     * Generate an opening bit — called automatically when the model loads.
-     * No user input needed; the comedian opens the set.
+     * Open the set — called once when the model loads.
      */
     async opener({ onToken } = {}) {
       const memory = await loadAgentMemory();
@@ -42,123 +125,105 @@ export function createComedyAgent({ model, onStatus }) {
 
       const nextMemory = updateMemoryFromTurn(memory, "(show opened)", output);
       await saveAgentMemory(nextMemory);
-      onStatus?.("The set is live. Talk back!");
+      onStatus?.("The set is live!");
 
       return { output, usedTools: [] };
     },
 
-    async run(input, { conversation = [], onToken, onToolUse } = {}) {
+    /**
+     * Generate the next bit in the set. This is the main autoplay method.
+     *
+     * - If `userInput` is provided, the agent incorporates the audience's input.
+     * - If `userInput` is empty/null, the agent freestyles its own next topic.
+     * - The agent autonomously decides whether to web search for material.
+     */
+    async nextBit({ userInput, audienceSignals = [], conversation = [], onToken, onToolUse } = {}) {
       const memory = await loadAgentMemory();
+      const memoryContext = buildMemoryContext(memory);
       const recentConversation = formatRecentConversation(conversation);
-      const routedMode = inferComedyMode(input, conversation);
-      const usedTools = [];
-      let searchContext = "No external facts gathered.";
+      const audienceSignalContext = formatAudienceSignals(audienceSignals);
+      const hasAudienceInput = Boolean(userInput?.trim());
       let finalAnswer = "";
+      let usedTools = [];
 
-      onStatus?.(`Memory loaded. Building a ${routedMode.replace(/_/g, " ")} bit...`);
+      // ── If user said something, check if it's a reaction or a new topic ──
+      if (hasAudienceInput) {
+        const routedMode = inferComedyMode(userInput, conversation);
 
-      // ── Interactive / continuation path ──
-      // For reactions, continuations, crowd work — skip the full plan+render
-      // pipeline and just riff directly off the conversation.
-      if (isInteractiveMode(routedMode)) {
-        onStatus?.("Riffing off the crowd...");
-        const continuePrompt = await ChatPromptTemplate.fromMessages([
-          ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_CONTINUE_PROMPT}`],
-          ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\n\nAudience says: {input}\nVibe: {routedMode}\nReact in one short paragraph."],
+        // Quick interactive riff for reactions
+        if (isInteractiveMode(routedMode)) {
+          onStatus?.("Riffing off the crowd...");
+          const continuePrompt = await ChatPromptTemplate.fromMessages([
+            ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_CONTINUE_PROMPT}`],
+            ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\n\nAudience says: {input}\nVibe: {routedMode}\nReact in one short paragraph, then keep the set going."],
+          ]).formatMessages({
+            input: userInput,
+            routedMode: routedMode.replace(/_/g, " "),
+            memoryContext,
+            recentConversation,
+            audienceSignalContext,
+          });
+
+          const result = await model.invoke(continuePrompt, { onToken });
+          finalAnswer = coerceShortParagraph(normalizeMessageContent(result.content));
+        } else {
+          // New topic from audience — autonomous tool step + plan+render
+          const toolResult = await autonomousToolStep({
+            topic: userInput,
+            memoryContext,
+            onToolUse,
+          });
+          usedTools = toolResult.usedTools;
+
+          finalAnswer = await planAndRender({
+            topic: userInput,
+            mode: routedMode,
+            memoryContext,
+            searchContext: toolResult.searchContext,
+            onToken,
+          });
+        }
+      } else {
+        // ── Freestyle — agent picks its own next topic ──
+        // Autonomous tool step: agent decides if it wants to search for material
+        const toolResult = await autonomousToolStep({
+          topic: `freestyle continuation. Recent set:\n${recentConversation}`,
+          memoryContext,
+          onToolUse,
+        });
+        usedTools = toolResult.usedTools;
+
+        onStatus?.("Cooking up the next bit...");
+        const autoPrompt = await ChatPromptTemplate.fromMessages([
+          ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_AUTOPLAY_PROMPT}`],
+          ["human", "Audience: {memoryContext}\nRecent set:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\nFacts: {searchContext}\n\nDeliver your next bit. One short paragraph."],
         ]).formatMessages({
-          input,
-          routedMode: routedMode.replace(/_/g, " "),
-          memoryContext: buildMemoryContext(memory),
+          memoryContext,
           recentConversation,
+          audienceSignalContext,
+          searchContext: toolResult.searchContext,
         });
 
-        const result = await model.invoke(continuePrompt, { onToken });
+        const result = await model.invoke(autoPrompt, { onToken });
         finalAnswer = coerceShortParagraph(normalizeMessageContent(result.content));
-
-        if (!finalAnswer) {
-          finalAnswer = "I had a callback lined up but it ghosted me. Hit me with another topic!";
-        }
-
-        const nextMemory = updateMemoryFromTurn(memory, input, finalAnswer);
-        await saveAgentMemory(nextMemory);
-        onStatus?.("Bit delivered. Keep it going!");
-
-        return { output: finalAnswer, usedTools };
       }
-
-      // ── Full plan + render path (new topic) ──
-      // Auto-search for prompts that likely need current info
-      if (needsWebSearch(input)) {
-        onStatus?.("Searching for context...");
-        onToolUse?.({ tool: "web_search", query: input, status: "searching" });
-        const searchTool = toolMap.get("web_search");
-        if (searchTool) {
-          try {
-            const searchResult = await searchTool.invoke({ query: input });
-            usedTools.push("web_search");
-            onToolUse?.({ tool: "web_search", query: input, status: "done", result: searchResult });
-            searchContext = searchResult
-              .split("\n")
-              .slice(0, 3)
-              .map((line) => line.slice(0, 160))
-              .join("\n");
-          } catch {
-            searchContext = "Web search failed. Use evergreen material only.";
-          }
-        }
-      }
-
-      onStatus?.("Shaping the premise and punchline...");
-      const planPrompt = await ChatPromptTemplate.fromMessages([
-        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_PLANNER_PROMPT}`],
-        ["human", "Topic: {input}\nMode: {routedMode}\nAudience: {memoryContext}\nFacts: {searchContext}"],
-      ]).formatMessages({
-        input,
-        routedMode,
-        memoryContext: buildMemoryContext(memory),
-        searchContext,
-      });
-
-      const planResult = await model.invoke(planPrompt);
-      const comedyPlan = parseComedyPlan(normalizeMessageContent(planResult.content));
-
-      onStatus?.("Performing the final bit...");
-      const renderPrompt = await ChatPromptTemplate.fromMessages([
-        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_RENDER_PROMPT}`],
-        ["human", "Topic: {input}\nBlueprint:\n{comedyPlan}\nFacts: {searchContext}\n\nOne short paragraph. End with a question or tease to keep the show going."],
-      ]).formatMessages({
-        input,
-        comedyPlan: formatComedyPlan(comedyPlan),
-        searchContext,
-      });
-
-      const finalResult = await model.invoke(renderPrompt, { onToken });
-      finalAnswer = coerceShortParagraph(normalizeMessageContent(finalResult.content));
 
       if (!finalAnswer) {
-        finalAnswer = "The punchline took a coffee break, but it says it will be back with a one-paragraph joke in spirit.";
+        finalAnswer = "I had a callback lined up but it ghosted me. Let me try another angle...";
       }
 
-      const nextMemory = updateMemoryFromTurn(memory, input, finalAnswer);
+      const promptLabel = hasAudienceInput ? userInput : "(autoplay)";
+      const nextMemory = updateMemoryFromTurn(memory, promptLabel, finalAnswer);
       await saveAgentMemory(nextMemory);
-      onStatus?.(
-        usedTools.length
-          ? `Joke ready. Memory saved after using ${usedTools.join(", ")}.`
-          : "Joke ready. Memory saved.",
-      );
+      onStatus?.(usedTools.length
+        ? `Bit delivered (used ${usedTools.join(", ")}). The set continues...`
+        : "Bit delivered. The set continues...");
 
-      return {
-        output: finalAnswer,
-        usedTools,
-      };
+      return { output: finalAnswer, usedTools };
     },
+
     cancel() {
       model.cancel();
     },
   };
-}
-
-function needsWebSearch(input) {
-  const lowered = input.toLowerCase();
-  return /(trending|today|latest|recent|current|news|happening now|this week|this month|what's new|update)/i.test(lowered);
 }

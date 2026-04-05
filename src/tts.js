@@ -75,9 +75,13 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
     /**
      * Returns a stream speaker that queues sentences as text arrives token-by-token.
      * Call `feed(fullTextSoFar)` on each onToken callback, then `flush()` when done.
+     *
+     * `onReveal(visibleText)` is called when each sentence **starts** being spoken,
+     * so the UI can sync displayed text to what the audience is hearing.
      */
-    createStreamSpeaker({ voice = DEFAULT_TTS_VOICE, speed = 1 } = {}) {
+    createStreamSpeaker({ voice = DEFAULT_TTS_VOICE, speed = 1, onReveal } = {}) {
       let spokenLength = 0;
+      let revealedText = "";
       const self = this;
 
       function resolveVoice() {
@@ -93,25 +97,38 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
         utterance.rate = speed;
         const matched = resolveVoice();
         if (matched) utterance.voice = matched;
+
+        // Reveal this sentence's text when speech starts
+        const textUpToHere = revealedText + (revealedText ? " " : "") + trimmed;
+        utterance.addEventListener("start", () => {
+          revealedText = textUpToHere;
+          onReveal?.(revealedText);
+        }, { once: true });
+
         speechSynthesis.speak(utterance);
       }
 
       return {
         /** Call with the full accumulated text on each token. */
         feed(fullText) {
-          if (!self.loaded) return;
+          if (!self.loaded) {
+            // If TTS not loaded, reveal text immediately
+            onReveal?.(fullText);
+            return;
+          }
           const fresh = fullText.slice(spokenLength);
-          // Split on sentence boundaries but keep the delimiter
           const sentences = fresh.split(/(?<=[.!?])\s+/);
-          // If the last chunk doesn't end with punctuation, it's still partial — hold it
           for (let i = 0; i < sentences.length - 1; i++) {
             enqueue(sentences[i]);
-            spokenLength += sentences[i].length + 1; // +1 for the split whitespace
+            spokenLength += sentences[i].length + 1;
           }
         },
         /** Speak any remaining text after generation finishes. */
         flush(fullText) {
-          if (!self.loaded) return;
+          if (!self.loaded) {
+            onReveal?.(fullText);
+            return;
+          }
           const remaining = fullText.slice(spokenLength).trim();
           if (remaining) enqueue(remaining);
           spokenLength = fullText.length;
@@ -120,6 +137,7 @@ export function createSpeechSynthesizer({ onStatus } = {}) {
         cancel() {
           speechSynthesis.cancel();
           spokenLength = 0;
+          revealedText = "";
         },
       };
     },
