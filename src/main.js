@@ -1,5 +1,7 @@
 import { FilesetResolver, LlmInference } from "@mediapipe/tasks-genai";
 import "./styles.css";
+import { createSpeechSynthesizer, DEFAULT_TTS_VOICE } from "./tts.js";
+import { COMEDY_SYSTEM_PROMPT } from "./agent/prompting.js";
 
 // LangChain agent modules are loaded lazily after the model is ready
 // to avoid the heavy bundle competing with WebGPU initialization.
@@ -34,10 +36,17 @@ const unloadModelButton = document.querySelector("#unloadModelButton");
 const runButton = document.querySelector("#runButton");
 const cancelButton = document.querySelector("#cancelButton");
 const clearChatButton = document.querySelector("#clearChatButton");
+const loadTtsButton = document.querySelector("#loadTtsButton");
+const stopTtsButton = document.querySelector("#stopTtsButton");
+const speakLastButton = document.querySelector("#speakLastButton");
+const ttsVoiceSelect = document.querySelector("#ttsVoiceSelect");
+const ttsSpeedInput = document.querySelector("#ttsSpeed");
+const autoSpeakCheckbox = document.querySelector("#autoSpeak");
 const chatMessages = document.querySelector("#chatMessages");
 const generatingIndicator = document.querySelector("#generatingIndicator");
 const attachImageButton = document.querySelector("#attachImageButton");
 const imagePreview = document.querySelector("#imagePreview");
+const ttsStatus = document.querySelector("#ttsStatus");
 
 const DEFAULT_MODEL_PATH = "/assets/gemma-4-E2B-it-web.task";
 const BUNDLED_MODEL_LABELS = {
@@ -50,18 +59,28 @@ let comedyAgent;
 let isGenerating = false;
 let activeModelSource;
 let conversation = [];
+let lastAssistantReply = "";
 
+const speechSynthesizer = createSpeechSynthesizer({
+  onStatus: setStatus,
+});
+
+speechSynthesis.cancel();
 setWebGpuStatus();
 renderConversation();
 syncUi();
 hideImageUi();
-loadModel();
+autoSpeakCheckbox.checked = true;
+preloadTts().then(() => loadModel());
 
 loadModelButton.addEventListener("click", loadModel);
 unloadModelButton.addEventListener("click", unloadModel);
 runButton.addEventListener("click", handleSendMessage);
 cancelButton.addEventListener("click", cancelGeneration);
 clearChatButton.addEventListener("click", clearChat);
+loadTtsButton.addEventListener("click", preloadTts);
+stopTtsButton.addEventListener("click", stopTtsPlayback);
+speakLastButton.addEventListener("click", speakLastReply);
 promptInput.addEventListener("input", updatePromptTokens);
 promptInput.addEventListener("input", autoResizeTextarea);
 promptInput.addEventListener("keydown", (event) => {
@@ -76,6 +95,13 @@ function hideImageUi() {
   imagePreview.innerHTML = "";
   attachImageButton.disabled = true;
   attachImageButton.title = "Agent mode is text-only";
+}
+
+function getTtsOptions() {
+  return {
+    voice: ttsVoiceSelect.value || DEFAULT_TTS_VOICE,
+    speed: readFloat(ttsSpeedInput, 1),
+  };
 }
 
 function autoResizeTextarea() {
@@ -93,6 +119,7 @@ function setWebGpuStatus() {
     return;
   }
   setFactStatus(webgpuStatus, "ok", "WebGPU: detected");
+  setFactStatus(ttsStatus, "", "TTS: not loaded");
 }
 
 function setFactStatus(element, level, text) {
@@ -145,8 +172,12 @@ async function loadModel() {
     });
 
     setFactStatus(modelStatus, "ok", `Model: ${activeModelSource.label}`);
-    setStatus("Model loaded. Ask for a short joke and the agent will keep local memory in memory/.");
+    setStatus("Model loaded. The comedian is taking the stage...");
     updatePromptTokens();
+    syncUi();
+
+    // Auto-open the set — the comedian starts without waiting for the user
+    await runOpener();
   } catch (error) {
     setFactStatus(modelStatus, "error", "Model: failed to load");
     setStatus(`Load failed: ${getErrorMessage(error)}`);
@@ -211,6 +242,45 @@ async function createInference(modelSource) {
   });
 }
 
+async function runOpener() {
+  if (!comedyAgent || isGenerating) return;
+
+  const assistantMessage = { role: "assistant", text: "" };
+  conversation.push(assistantMessage);
+  renderConversation();
+
+  try {
+    isGenerating = true;
+    generatingIndicator.classList.add("active");
+    syncUi();
+
+    const streamer = speechSynthesizer.createStreamSpeaker(getTtsOptions());
+
+    const result = await comedyAgent.opener({
+      onToken: (partialText) => {
+        assistantMessage.text = partialText;
+        updateLastAssistantMessage(assistantMessage);
+        streamer.feed(partialText);
+      },
+    });
+
+    assistantMessage.text = result.output;
+    lastAssistantReply = result.output;
+    streamer.flush(result.output);
+    setStatus("The set is live! Say something back — react, heckle, or give a topic.");
+  } catch (error) {
+    conversation.pop();
+    setStatus(`Opener failed: ${getErrorMessage(error)}`);
+  } finally {
+    isGenerating = false;
+    generatingIndicator.classList.remove("active");
+    renderConversation();
+    updatePromptTokens();
+    syncUi();
+    promptInput.focus();
+  }
+}
+
 async function handleSendMessage() {
   if (!llmInference || !comedyAgent || isGenerating) {
     return;
@@ -238,11 +308,14 @@ async function handleSendMessage() {
     syncUi();
     setStatus("The comedy agent is warming up...");
 
+    const streamer = speechSynthesizer.createStreamSpeaker(getTtsOptions());
+
     const result = await comedyAgent.run(prompt, {
       conversation: conversationSnapshot,
       onToken: (partialText) => {
         assistantMessage.text = partialText;
         updateLastAssistantMessage(assistantMessage);
+        streamer.feed(partialText);
       },
       onToolUse: ({ tool, query, status, result }) => {
         if (status === "searching") {
@@ -257,6 +330,8 @@ async function handleSendMessage() {
     });
 
     assistantMessage.text = result.output;
+    lastAssistantReply = result.output;
+    streamer.flush(result.output);
     setStatus(
       result.usedTools.length
         ? `Generation finished. Tools used: ${result.usedTools.join(", ")}.`
@@ -294,9 +369,59 @@ function clearChat() {
   }
 
   conversation = [];
+  lastAssistantReply = "";
   renderConversation();
   updatePromptTokens();
   setStatus("Chat history cleared. Saved memory files stay on disk until you remove them.");
+}
+
+async function preloadTts() {
+  try {
+    loadTtsButton.disabled = true;
+    setFactStatus(ttsStatus, "loading", "TTS: loading...");
+    await speechSynthesizer.preload();
+    setFactStatus(ttsStatus, "ok", "TTS: ready");
+  } catch (error) {
+    setFactStatus(ttsStatus, "error", "TTS: failed");
+    setStatus(`TTS load failed: ${getErrorMessage(error)}`);
+  } finally {
+    syncUi();
+  }
+}
+
+async function speakText(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) {
+    return;
+  }
+
+  try {
+    if (!speechSynthesizer.loaded) {
+      setFactStatus(ttsStatus, "loading", "TTS: loading...");
+    }
+
+    await speechSynthesizer.speak(trimmed, getTtsOptions());
+    setFactStatus(ttsStatus, "ok", "TTS: speaking");
+  } catch (error) {
+    setFactStatus(ttsStatus, "error", "TTS: failed");
+    setStatus(`TTS failed: ${getErrorMessage(error)}`);
+  } finally {
+    syncUi();
+  }
+}
+
+async function speakLastReply() {
+  await speakText(lastAssistantReply);
+}
+
+function stopTtsPlayback() {
+  speechSynthesizer.stop();
+  if (speechSynthesizer.loaded) {
+    setFactStatus(ttsStatus, "ok", "TTS: ready");
+  } else {
+    setFactStatus(ttsStatus, "", "TTS: not loaded");
+  }
+  syncUi();
 }
 
 function renderConversation() {
@@ -304,7 +429,7 @@ function renderConversation() {
     chatMessages.innerHTML = `
       <article class="message assistant">
         <p class="message-role">Gemma Comedy Agent</p>
-        <div class="message-body"><p>Load the model, then ask for a short joke. The agent can use online info and save audience memory to local files.</p></div>
+        <div class="message-body"><p>Loading the model... the comedian will open the set automatically. Then just talk back — react, heckle, ask for more, or throw out a new topic!</p></div>
       </article>
     `;
     return;
@@ -380,12 +505,16 @@ function buildPromptFromMessages(messages) {
 
 function syncUi() {
   const modelLoaded = Boolean(llmInference);
+  const hasReplyToSpeak = Boolean(lastAssistantReply.trim());
 
   loadModelButton.disabled = isGenerating;
   unloadModelButton.disabled = !modelLoaded || isGenerating;
   runButton.disabled = !modelLoaded || isGenerating;
   cancelButton.disabled = !modelLoaded || !isGenerating;
   clearChatButton.disabled = isGenerating;
+  loadTtsButton.disabled = isGenerating;
+  stopTtsButton.disabled = !speechSynthesizer.loaded;
+  speakLastButton.disabled = isGenerating || !hasReplyToSpeak;
   modelFileInput.disabled = isGenerating;
   bundledModelSelect.disabled = isGenerating;
   maxTokensInput.disabled = modelLoaded || isGenerating;
@@ -393,6 +522,9 @@ function syncUi() {
   temperatureInput.disabled = modelLoaded || isGenerating;
   randomSeedInput.disabled = modelLoaded || isGenerating;
   promptInput.disabled = !modelLoaded || isGenerating;
+  ttsVoiceSelect.disabled = isGenerating;
+  ttsSpeedInput.disabled = isGenerating;
+  autoSpeakCheckbox.disabled = isGenerating;
   attachImageButton.disabled = true;
   attachImageButton.title = "Agent mode is text-only";
 }

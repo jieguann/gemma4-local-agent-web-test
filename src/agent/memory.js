@@ -1,11 +1,15 @@
 const DEFAULT_PROFILE = {
   audienceProfile: {
     tone: "lighthearted",
+    energy: "medium",
+    edge: "playful",
     favoriteTopics: [],
     avoidTopics: [],
     styleNotes: ["short paragraph jokes"],
+    preferredModes: [],
   },
   recentLearnings: [],
+  callbackBank: [],
   lastUpdated: "",
 };
 
@@ -36,34 +40,18 @@ export async function saveAgentMemory(memory) {
 export function buildMemoryContext(memory) {
   const profile = mergeProfile(memory?.profile);
   const history = mergeHistory(memory?.history);
+  const ap = profile.audienceProfile;
 
-  const favoriteTopics = profile.audienceProfile.favoriteTopics.length
-    ? profile.audienceProfile.favoriteTopics.join(", ")
-    : "none saved";
-  const avoidTopics = profile.audienceProfile.avoidTopics.length
-    ? profile.audienceProfile.avoidTopics.join(", ")
-    : "none saved";
-  const styleNotes = profile.audienceProfile.styleNotes.length
-    ? profile.audienceProfile.styleNotes.join(", ")
-    : "short paragraph jokes";
-  const recentLearnings = profile.recentLearnings.length
-    ? profile.recentLearnings.join(" | ")
-    : "none saved";
-  const recentHistory = history.entries.length
-    ? history.entries
-        .slice(-3)
-        .map((entry) => `User asked: ${entry.userPrompt} | You answered: ${entry.assistantReply}`)
-        .join("\n")
-    : "No recent joke history saved.";
+  const parts = [`Tone: ${ap.tone}/${ap.energy}/${ap.edge}`];
 
-  return [
-    `Preferred tone: ${profile.audienceProfile.tone}`,
-    `Favorite topics: ${favoriteTopics}`,
-    `Avoid topics: ${avoidTopics}`,
-    `Style notes: ${styleNotes}`,
-    `Recent learnings: ${recentLearnings}`,
-    `Recent joke history:\n${recentHistory}`,
-  ].join("\n");
+  if (ap.favoriteTopics.length) parts.push(`Likes: ${ap.favoriteTopics.slice(-3).join(", ")}`);
+  if (ap.avoidTopics.length) parts.push(`Avoid: ${ap.avoidTopics.join(", ")}`);
+  if (profile.callbackBank.length) parts.push(`Callbacks: ${profile.callbackBank.slice(-2).join(" | ")}`);
+
+  const lastEntry = history.entries.at(-1);
+  if (lastEntry) parts.push(`Last bit: "${lastEntry.assistantReply.slice(0, 80)}"`);
+
+  return parts.join("\n");
 }
 
 export function updateMemoryFromTurn(memory, userPrompt, assistantReply) {
@@ -76,7 +64,9 @@ export function updateMemoryFromTurn(memory, userPrompt, assistantReply) {
   applyTonePreference(nextProfile, trimmedPrompt);
   applyTopicPreferences(nextProfile, trimmedPrompt);
   applyStylePreferences(nextProfile, trimmedPrompt);
+  applyModePreferences(nextProfile, trimmedPrompt);
   applyRecentLearnings(nextProfile, trimmedPrompt);
+  applyCallbackMemory(nextProfile, trimmedPrompt, trimmedReply);
 
   if (trimmedPrompt || trimmedReply) {
     nextHistory.entries.push({
@@ -101,10 +91,16 @@ function applyTonePreference(profile, prompt) {
 
   if (/(clean|family friendly|wholesome)/.test(lowered)) {
     profile.audienceProfile.tone = "clean and wholesome";
+    profile.audienceProfile.edge = "gentle";
   } else if (/(dry|deadpan)/.test(lowered)) {
     profile.audienceProfile.tone = "dry and deadpan";
+    profile.audienceProfile.energy = "low";
   } else if (/(silly|goofy)/.test(lowered)) {
     profile.audienceProfile.tone = "silly and playful";
+    profile.audienceProfile.energy = "high";
+  } else if (/(sarcastic|snarky|edgy)/.test(lowered)) {
+    profile.audienceProfile.tone = "sharp and sarcastic";
+    profile.audienceProfile.edge = "spiky";
   }
 }
 
@@ -130,14 +126,55 @@ function applyStylePreferences(profile, prompt) {
   if (lowered.includes("one paragraph")) {
     pushUnique(profile.audienceProfile.styleNotes, "one paragraph format");
   }
+
+  if (/(short|quick|brief)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.styleNotes, "tight setup and payoff");
+  }
+}
+
+function applyModePreferences(profile, prompt) {
+  const lowered = prompt.toLowerCase();
+
+  if (/(roast|make fun of)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.preferredModes, "roast");
+  }
+
+  if (/(headline|news desk|breaking news)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.preferredModes, "fake_headline");
+  }
+
+  if (/(story|anecdote)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.preferredModes, "story_bit");
+  }
+
+  if (/(one-liner|one liner)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.preferredModes, "one_liner");
+  }
+
+  if (/(observational|relatable)/.test(lowered)) {
+    pushUnique(profile.audienceProfile.preferredModes, "observational");
+  }
 }
 
 function applyRecentLearnings(profile, prompt) {
   const lowered = prompt.toLowerCase();
 
-  if (/(audience|crowd|people)/.test(lowered) && prompt.trim()) {
+  if (/(audience|crowd|people|likes|prefers|hates|wants)/.test(lowered) && prompt.trim()) {
     pushUnique(profile.recentLearnings, prompt.trim().slice(0, 180));
     profile.recentLearnings = profile.recentLearnings.slice(-6);
+  }
+}
+
+function applyCallbackMemory(profile, prompt, reply) {
+  const callbackSource = [prompt, reply].filter(Boolean).join(" ");
+  const lowered = callbackSource.toLowerCase();
+
+  if (/(banana peel|coffee break|punchline|stage|crowd|trend|news desk)/.test(lowered)) {
+    const snippet = callbackSource.trim().replace(/\s+/g, " ").slice(0, 100);
+    if (snippet) {
+      pushUnique(profile.callbackBank, snippet);
+      profile.callbackBank = profile.callbackBank.slice(-6);
+    }
   }
 }
 
@@ -199,8 +236,12 @@ function mergeProfile(profile) {
       styleNotes: Array.isArray(profile?.audienceProfile?.styleNotes)
         ? [...profile.audienceProfile.styleNotes]
         : [...DEFAULT_PROFILE.audienceProfile.styleNotes],
+      preferredModes: Array.isArray(profile?.audienceProfile?.preferredModes)
+        ? [...profile.audienceProfile.preferredModes]
+        : [...DEFAULT_PROFILE.audienceProfile.preferredModes],
     },
     recentLearnings: Array.isArray(profile?.recentLearnings) ? [...profile.recentLearnings] : [],
+    callbackBank: Array.isArray(profile?.callbackBank) ? [...profile.callbackBank] : [],
   };
 }
 

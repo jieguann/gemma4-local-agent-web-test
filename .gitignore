@@ -5,6 +5,7 @@ dist/
 public/assets/*.task
 public/assets/*.litertlm
 public/assets/*.bin
+public/assets/kokoro-onnx/
 
 # Editor / IDE
 .vscode/

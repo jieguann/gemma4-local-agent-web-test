@@ -1,32 +1,92 @@
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { loadAgentMemory, saveAgentMemory, buildMemoryContext, updateMemoryFromTurn } from "./memory.js";
-import { parseAgentOutput } from "./output-parser.js";
 import {
-  AGENT_PROTOCOL_PROMPT,
+  COMEDY_CONTINUE_PROMPT,
+  COMEDY_OPENER_PROMPT,
+  COMEDY_PLANNER_PROMPT,
+  COMEDY_RENDER_PROMPT,
   COMEDY_SYSTEM_PROMPT,
   coerceShortParagraph,
+  formatComedyPlan,
   formatRecentConversation,
+  inferComedyMode,
+  isInteractiveMode,
   normalizeMessageContent,
+  parseComedyPlan,
 } from "./prompting.js";
-import { buildToolMap, createAgentTools, describeTools } from "./tools.js";
-
-const MAX_AGENT_STEPS = 3;
+import { buildToolMap, createAgentTools } from "./tools.js";
 
 export function createComedyAgent({ model, onStatus }) {
   const tools = createAgentTools();
   const toolMap = buildToolMap(tools);
 
   return {
+    /**
+     * Generate an opening bit — called automatically when the model loads.
+     * No user input needed; the comedian opens the set.
+     */
+    async opener({ onToken } = {}) {
+      const memory = await loadAgentMemory();
+      onStatus?.("Opening the set...");
+
+      const openerPrompt = await ChatPromptTemplate.fromMessages([
+        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_OPENER_PROMPT}`],
+        ["human", "Audience: {memoryContext}\n\nOpen the set."],
+      ]).formatMessages({
+        memoryContext: buildMemoryContext(memory),
+      });
+
+      const result = await model.invoke(openerPrompt, { onToken });
+      const output = coerceShortParagraph(normalizeMessageContent(result.content))
+        || "Hey hey! Welcome to the show! So... what's on your mind? Give me a topic and I'll make it funny.";
+
+      const nextMemory = updateMemoryFromTurn(memory, "(show opened)", output);
+      await saveAgentMemory(nextMemory);
+      onStatus?.("The set is live. Talk back!");
+
+      return { output, usedTools: [] };
+    },
+
     async run(input, { conversation = [], onToken, onToolUse } = {}) {
       const memory = await loadAgentMemory();
       const recentConversation = formatRecentConversation(conversation);
-      const toolsDescription = describeTools(tools);
-      let scratchpad = "";
-      let finalAnswer = "";
+      const routedMode = inferComedyMode(input, conversation);
       const usedTools = [];
+      let searchContext = "No external facts gathered.";
+      let finalAnswer = "";
 
-      onStatus?.("Memory loaded. Building the comedy routine...");
+      onStatus?.(`Memory loaded. Building a ${routedMode.replace(/_/g, " ")} bit...`);
 
+      // ── Interactive / continuation path ──
+      // For reactions, continuations, crowd work — skip the full plan+render
+      // pipeline and just riff directly off the conversation.
+      if (isInteractiveMode(routedMode)) {
+        onStatus?.("Riffing off the crowd...");
+        const continuePrompt = await ChatPromptTemplate.fromMessages([
+          ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_CONTINUE_PROMPT}`],
+          ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\n\nAudience says: {input}\nVibe: {routedMode}\nReact in one short paragraph."],
+        ]).formatMessages({
+          input,
+          routedMode: routedMode.replace(/_/g, " "),
+          memoryContext: buildMemoryContext(memory),
+          recentConversation,
+        });
+
+        const result = await model.invoke(continuePrompt, { onToken });
+        finalAnswer = coerceShortParagraph(normalizeMessageContent(result.content));
+
+        if (!finalAnswer) {
+          finalAnswer = "I had a callback lined up but it ghosted me. Hit me with another topic!";
+        }
+
+        const nextMemory = updateMemoryFromTurn(memory, input, finalAnswer);
+        await saveAgentMemory(nextMemory);
+        onStatus?.("Bit delivered. Keep it going!");
+
+        return { output: finalAnswer, usedTools };
+      }
+
+      // ── Full plan + render path (new topic) ──
       // Auto-search for prompts that likely need current info
       if (needsWebSearch(input)) {
         onStatus?.("Searching for context...");
@@ -37,62 +97,43 @@ export function createComedyAgent({ model, onStatus }) {
             const searchResult = await searchTool.invoke({ query: input });
             usedTools.push("web_search");
             onToolUse?.({ tool: "web_search", query: input, status: "done", result: searchResult });
-            // Trim search results to avoid blowing the context window
-            const trimmedResults = searchResult.split("\n").slice(0, 3).map(l => l.slice(0, 150)).join("\n");
-            scratchpad += `Web facts:\n${trimmedResults}\n\nYou MUST use these facts in your joke. Reply with ANSWER: your joke.\n`;
+            searchContext = searchResult
+              .split("\n")
+              .slice(0, 3)
+              .map((line) => line.slice(0, 160))
+              .join("\n");
           } catch {
-            scratchpad += "Thought 0: Web search failed. Write a joke without it.\n";
+            searchContext = "Web search failed. Use evergreen material only.";
           }
         }
       }
 
-      for (let step = 0; step < MAX_AGENT_STEPS; step += 1) {
-        const prompt = await ChatPromptTemplate.fromMessages([
-          ["system", `${COMEDY_SYSTEM_PROMPT}\n\n${AGENT_PROTOCOL_PROMPT}\n\nTools:\n{toolsDescription}\n\nMemory:\n{memoryContext}`],
-          ["human", "Topic: {input}\n\n{scratchpad}\n\nWrite a funny joke about the topic. If web facts are provided, use them."],
-        ]).formatMessages({
-          memoryContext: buildMemoryContext(memory),
-          toolsDescription,
-          input,
-          scratchpad: scratchpad || "None yet.",
-        });
+      onStatus?.("Shaping the premise and punchline...");
+      const planPrompt = await ChatPromptTemplate.fromMessages([
+        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_PLANNER_PROMPT}`],
+        ["human", "Topic: {input}\nMode: {routedMode}\nAudience: {memoryContext}\nFacts: {searchContext}"],
+      ]).formatMessages({
+        input,
+        routedMode,
+        memoryContext: buildMemoryContext(memory),
+        searchContext,
+      });
 
-        const result = await model.invoke(prompt, {
-          onToken: step === 0 ? onToken : undefined,
-        });
+      const planResult = await model.invoke(planPrompt);
+      const comedyPlan = parseComedyPlan(normalizeMessageContent(planResult.content));
 
-        const raw = normalizeMessageContent(result.content);
-        const parsed = parseAgentOutput(raw);
+      onStatus?.("Performing the final bit...");
+      const renderPrompt = await ChatPromptTemplate.fromMessages([
+        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_RENDER_PROMPT}`],
+        ["human", "Topic: {input}\nBlueprint:\n{comedyPlan}\nFacts: {searchContext}\n\nOne short paragraph. End with a question or tease to keep the show going."],
+      ]).formatMessages({
+        input,
+        comedyPlan: formatComedyPlan(comedyPlan),
+        searchContext,
+      });
 
-        if (parsed.type === "answer") {
-          finalAnswer = coerceShortParagraph(parsed.answer);
-          break;
-        }
-
-        const tool = toolMap.get(parsed.toolName);
-        if (!tool) {
-          finalAnswer = coerceShortParagraph(raw);
-          break;
-        }
-
-        onStatus?.(`Using tool: ${parsed.toolName}`);
-        // Ensure args has a query string — small models sometimes produce unexpected arg shapes
-        let toolArgs = parsed.args;
-        if (parsed.toolName === "web_search" && typeof toolArgs?.query !== "string") {
-          const fallbackQuery = typeof toolArgs === "string" ? toolArgs : Object.values(toolArgs ?? {}).find(v => typeof v === "string") ?? input;
-          toolArgs = { query: fallbackQuery };
-        }
-        onToolUse?.({ tool: parsed.toolName, query: toolArgs?.query ?? "", status: "searching" });
-        const toolResult = await tool.invoke(toolArgs);
-        usedTools.push(parsed.toolName);
-        onToolUse?.({ tool: parsed.toolName, query: toolArgs?.query ?? "", status: "done", result: toolResult });
-        scratchpad += [
-          `Thought ${step + 1}: I used ${parsed.toolName}.`,
-          `Tool input: ${JSON.stringify(parsed.args)}`,
-          `Tool result: ${toolResult}`,
-        ].join("\n");
-        scratchpad += "\n\nNow decide whether to call another tool or provide ANSWER.\n";
-      }
+      const finalResult = await model.invoke(renderPrompt, { onToken });
+      finalAnswer = coerceShortParagraph(normalizeMessageContent(finalResult.content));
 
       if (!finalAnswer) {
         finalAnswer = "The punchline took a coffee break, but it says it will be back with a one-paragraph joke in spirit.";

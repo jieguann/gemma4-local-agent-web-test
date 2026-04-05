@@ -1,0 +1,144 @@
+export const DEFAULT_TTS_VOICE = "";
+
+export const TTS_VOICE_OPTIONS = [];
+
+function getVoices() {
+  return new Promise((resolve) => {
+    const voices = speechSynthesis.getVoices();
+    if (voices.length) {
+      resolve(voices);
+      return;
+    }
+    speechSynthesis.addEventListener("voiceschanged", () => {
+      resolve(speechSynthesis.getVoices());
+    }, { once: true });
+  });
+}
+
+export function createSpeechSynthesizer({ onStatus } = {}) {
+  let ready = false;
+  let currentUtterance = null;
+
+  return {
+    async preload() {
+      if (!("speechSynthesis" in window)) {
+        throw new Error("Browser speech synthesis not supported.");
+      }
+      const voices = await getVoices();
+      ready = true;
+
+      // Populate the exported voice options so the UI can pick them up
+      TTS_VOICE_OPTIONS.length = 0;
+      for (const v of voices) {
+        TTS_VOICE_OPTIONS.push({ value: v.name, label: `${v.name} (${v.lang})` });
+      }
+
+      onStatus?.(`TTS ready — ${voices.length} voices available.`);
+    },
+
+    async speak(text, { voice = DEFAULT_TTS_VOICE, speed = 1 } = {}) {
+      const trimmed = String(text ?? "").trim();
+      if (!trimmed) {
+        throw new Error("Nothing to speak.");
+      }
+
+      if (!ready) await this.preload();
+
+      speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(trimmed);
+      utterance.rate = speed;
+
+      if (voice) {
+        const voices = speechSynthesis.getVoices();
+        const match = voices.find((v) => v.name === voice);
+        if (match) utterance.voice = match;
+      }
+
+      currentUtterance = utterance;
+
+      return new Promise((resolve, reject) => {
+        utterance.addEventListener("end", () => {
+          currentUtterance = null;
+          onStatus?.("Speech playback finished.");
+          resolve();
+        }, { once: true });
+        utterance.addEventListener("error", (e) => {
+          currentUtterance = null;
+          reject(new Error(e.error || "Speech synthesis error"));
+        }, { once: true });
+        onStatus?.("Speaking...");
+        speechSynthesis.speak(utterance);
+      });
+    },
+
+    /**
+     * Returns a stream speaker that queues sentences as text arrives token-by-token.
+     * Call `feed(fullTextSoFar)` on each onToken callback, then `flush()` when done.
+     */
+    createStreamSpeaker({ voice = DEFAULT_TTS_VOICE, speed = 1 } = {}) {
+      let spokenLength = 0;
+      const self = this;
+
+      function resolveVoice() {
+        if (!voice) return null;
+        const voices = speechSynthesis.getVoices();
+        return voices.find((v) => v.name === voice) ?? null;
+      }
+
+      function enqueue(text) {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const utterance = new SpeechSynthesisUtterance(trimmed);
+        utterance.rate = speed;
+        const matched = resolveVoice();
+        if (matched) utterance.voice = matched;
+        speechSynthesis.speak(utterance);
+      }
+
+      return {
+        /** Call with the full accumulated text on each token. */
+        feed(fullText) {
+          if (!self.loaded) return;
+          const fresh = fullText.slice(spokenLength);
+          // Split on sentence boundaries but keep the delimiter
+          const sentences = fresh.split(/(?<=[.!?])\s+/);
+          // If the last chunk doesn't end with punctuation, it's still partial — hold it
+          for (let i = 0; i < sentences.length - 1; i++) {
+            enqueue(sentences[i]);
+            spokenLength += sentences[i].length + 1; // +1 for the split whitespace
+          }
+        },
+        /** Speak any remaining text after generation finishes. */
+        flush(fullText) {
+          if (!self.loaded) return;
+          const remaining = fullText.slice(spokenLength).trim();
+          if (remaining) enqueue(remaining);
+          spokenLength = fullText.length;
+        },
+        /** Cancel all queued speech. */
+        cancel() {
+          speechSynthesis.cancel();
+          spokenLength = 0;
+        },
+      };
+    },
+
+    stop() {
+      speechSynthesis.cancel();
+      currentUtterance = null;
+      onStatus?.("Speech playback stopped.");
+    },
+
+    unload() {
+      speechSynthesis.cancel();
+      currentUtterance = null;
+      ready = false;
+      onStatus?.("TTS unloaded.");
+    },
+
+    get loaded() {
+      return ready;
+    },
+  };
+}

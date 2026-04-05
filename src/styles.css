@@ -84,6 +84,7 @@ code {
 /* ── Form elements ── */
 button,
 input,
+select,
 textarea {
   font: inherit;
   color: var(--text);
@@ -95,12 +96,14 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 input,
+select,
 textarea {
   width: 100%;
   padding: 0.75rem 0.9rem;
@@ -279,6 +282,20 @@ button.danger:hover:enabled {
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
+.toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 /* ── Status card ── */

@@ -1,8 +1,5 @@
-export const COMEDY_SYSTEM_PROMPT = [
-  "You are a comedy artist. Write one short, funny paragraph about the EXACT topic the user asks for.",
-  "Always base your joke on the user's topic. Never ignore it. Never default to cats or generic jokes.",
-  "Keep it playful and concise. No hateful or cruel content.",
-].join(" ");
+export const COMEDY_SYSTEM_PROMPT =
+  "You are a live stand-up comic doing an interactive set. Sharp setup-payoff structure, specific observations, one clear punch. Riff on the audience's topic and taste. Stay playful and safe.";
 
 export const AGENT_PROTOCOL_PROMPT = [
   "You may either call a tool or provide the final joke.",
@@ -12,6 +9,18 @@ export const AGENT_PROTOCOL_PROMPT = [
   "ANSWER: your short paragraph joke",
   "Do not output both ACTION and ANSWER in the same response.",
 ].join("\n");
+
+export const COMEDY_OPENER_PROMPT =
+  "Open your set: 2-3 sentences. Greet the crowd with a quick joke, then invite interaction (ask them something or tease a topic). No generic hellos — perform.";
+
+export const COMEDY_CONTINUE_PROMPT =
+  "React to the audience like a comic mid-set. Build on laughs, recover from bombs, riff on heckles, do crowd work. Use callbacks to earlier bits. One short paragraph, end with something that keeps the show going.";
+
+export const COMEDY_PLANNER_PROMPT =
+  "Plan a comedy bit. Return these labels on separate lines:\nMode:\nPremise:\nAngle:\nPunch:\nCallback:";
+
+export const COMEDY_RENDER_PROMPT =
+  "Perform the bit from the blueprint. One short paragraph, natural comedian voice. Setup then payoff. Stay on topic.";
 
 export function stripControlTokens(text) {
   return String(text ?? "")
@@ -81,7 +90,7 @@ export function formatRecentConversation(conversation) {
     return "No prior conversation yet.";
   }
 
-  const recentTurns = conversation.slice(-8);
+  const recentTurns = conversation.slice(-4);
   return recentTurns
     .map((message) => {
       const role = message.role === "assistant" ? "Assistant" : "User";
@@ -103,4 +112,97 @@ export function coerceShortParagraph(text) {
   }
 
   return cleaned;
+}
+
+export function inferComedyMode(input, conversation = []) {
+  const prompt = String(input ?? "").toLowerCase();
+  const recentText = Array.isArray(conversation)
+    ? conversation.slice(-4).map((entry) => String(entry?.text ?? "").toLowerCase()).join(" ")
+    : "";
+  const combined = `${prompt} ${recentText}`;
+  const hasHistory = Array.isArray(conversation) && conversation.some((m) => m.role === "assistant");
+
+  // Interactive/continuation modes — detected when there's prior conversation
+  if (hasHistory) {
+    if (/(more|keep going|continue|another|go on|encore|next|and then)/.test(prompt)) {
+      return "continue_bit";
+    }
+    if (/(haha|lol|lmao|rofl|😂|🤣|that's? (funny|good|great|hilarious)|loved? (it|that))/.test(prompt)) {
+      return "build_on_laugh";
+    }
+    if (/(no|bad|terrible|awful|boo|not funny|cringe|meh|weak|try again)/.test(prompt)) {
+      return "recover_from_bomb";
+    }
+    if (/\?$/.test(prompt.trim())) {
+      return "crowd_work";
+    }
+    // Short responses (1-4 words) are likely audience reactions — do crowd work
+    if (prompt.split(/\s+/).length <= 4 && !/joke about|tell me about/i.test(prompt)) {
+      return "crowd_work";
+    }
+  }
+
+  if (/(roast|make fun of|insult)/.test(combined)) {
+    return "roast";
+  }
+
+  if (/(headline|breaking news|anchor|news desk)/.test(combined)) {
+    return "fake_headline";
+  }
+
+  if (/(story|anecdote|once|let me tell you)/.test(combined)) {
+    return "story_bit";
+  }
+
+  if (/(crowd|audience|room|people here|you folks)/.test(combined)) {
+    return "crowd_work";
+  }
+
+  if (/(one-liner|one liner|short joke|quick joke)/.test(combined)) {
+    return "one_liner";
+  }
+
+  if (/(today|latest|current|news|trending|this week|this month)/.test(combined)) {
+    return "topical_observational";
+  }
+
+  return "observational";
+}
+
+/**
+ * Returns true if the mode is an interactive/continuation mode
+ * (i.e. should use the continue prompt rather than the full plan+render pipeline).
+ */
+export function isInteractiveMode(mode) {
+  return ["continue_bit", "build_on_laugh", "recover_from_bomb", "crowd_work"].includes(mode);
+}
+
+export function parseComedyPlan(text) {
+  const labels = ["Mode", "Premise", "Angle", "Punch", "Callback"];
+  const source = stripControlTokens(text);
+  const plan = {};
+
+  for (const label of labels) {
+    const match = source.match(new RegExp(`^${label}:\\s*(.*)$`, "im"));
+    plan[label.toLowerCase()] = match?.[1]?.trim() || "";
+  }
+
+  return {
+    mode: plan.mode || "observational",
+    premise: plan.premise || "the topic has comic potential",
+    angle: plan.angle || "playful twist",
+    punch: plan.punch || "one clear punchline",
+    callback: plan.callback || "",
+  };
+}
+
+export function formatComedyPlan(plan) {
+  const lines = [
+    `Mode: ${plan.mode}`,
+    `Premise: ${plan.premise}`,
+    `Angle: ${plan.angle}`,
+    `Punch: ${plan.punch}`,
+  ];
+  if (plan.callback) lines.push(`Callback: ${plan.callback}`);
+  return lines.join("\n");
 }
