@@ -761,7 +761,10 @@ function waitBetweenBits() {
       resolve();
       return;
     }
-    setTimeout(resolve, PAUSE_BETWEEN_BITS_MS);
+    setTimeout(async () => {
+      await waitForSpeechPlayback();
+      resolve();
+    }, PAUSE_BETWEEN_BITS_MS);
   });
 }
 
@@ -1190,6 +1193,17 @@ async function waitForInferenceCooldown() {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForSpeechPlayback(timeoutMs = 8000) {
+  if (!("speechSynthesis" in window)) {
+    return;
+  }
+
+  const startedAt = Date.now();
+  while ((speechSynthesis.speaking || speechSynthesis.pending) && Date.now() - startedAt < timeoutMs) {
+    await delay(120);
+  }
 }
 
 function updatePromptTokens() {

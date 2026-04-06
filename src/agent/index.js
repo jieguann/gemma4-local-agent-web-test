@@ -11,6 +11,7 @@ import {
   COMEDY_TOOL_DECISION_PROMPT,
   coerceShortParagraph,
   formatComedyPlan,
+  formatRecentAssistantBits,
   formatRecentConversation,
   inferComedyMode,
   isInteractiveMode,
@@ -142,6 +143,7 @@ export function createComedyAgent({ model, onStatus }) {
       const memory = await loadAgentMemory();
       const memoryContext = buildMemoryContext(memory);
       const recentConversation = formatRecentConversation(conversation);
+      const recentAssistantBits = formatRecentAssistantBits(conversation);
       const audienceSignalContext = formatAudienceSignals(audienceSignals);
       const hasAudienceInput = Boolean(userInput?.trim());
       let finalAnswer = "";
@@ -156,12 +158,13 @@ export function createComedyAgent({ model, onStatus }) {
           onStatus?.("Riffing off the crowd...");
           const continuePrompt = await ChatPromptTemplate.fromMessages([
             ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_CONTINUE_PROMPT}`],
-            ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\n\nAudience says: {input}\nVibe: {routedMode}\nReact in one short paragraph, then keep the set going."],
+            ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nRecent assistant bits to avoid repeating:\n{recentAssistantBits}\nAudience signals:\n{audienceSignalContext}\n\nAudience says: {input}\nVibe: {routedMode}\nReact in one short paragraph, then keep the set going without repeating the prior opening phrasing."],
           ]).formatMessages({
             input: userInput,
             routedMode: routedMode.replace(/_/g, " "),
             memoryContext,
             recentConversation,
+            recentAssistantBits,
             audienceSignalContext,
           });
 
@@ -197,10 +200,11 @@ export function createComedyAgent({ model, onStatus }) {
         onStatus?.("Cooking up the next bit...");
         const autoPrompt = await ChatPromptTemplate.fromMessages([
           ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_AUTOPLAY_PROMPT}`],
-          ["human", "Audience: {memoryContext}\nRecent set:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\nFacts: {searchContext}\n\nDeliver your next bit. One short paragraph."],
+          ["human", "Audience: {memoryContext}\nRecent set:\n{recentConversation}\nRecent assistant bits to avoid repeating:\n{recentAssistantBits}\nAudience signals:\n{audienceSignalContext}\nFacts: {searchContext}\n\nDeliver your next bit. One short paragraph with a fresh opening and a different setup from those recent bits."],
         ]).formatMessages({
           memoryContext,
           recentConversation,
+          recentAssistantBits,
           audienceSignalContext,
           searchContext: toolResult.searchContext,
         });
@@ -227,16 +231,18 @@ export function createComedyAgent({ model, onStatus }) {
       const memory = await loadAgentMemory();
       const memoryContext = buildMemoryContext(memory);
       const recentConversation = formatRecentConversation(conversation);
+      const recentAssistantBits = formatRecentAssistantBits(conversation);
       const audienceSignalContext = formatAudienceSignals(audienceSignals);
 
       onStatus?.("Answering the heckler...");
       const defensePrompt = await ChatPromptTemplate.fromMessages([
         ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_DEFENSE_PROMPT}`],
-        ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\n\nCrowd heckle: {heckle}\nAnswer it, then keep the set alive."],
+        ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nRecent assistant bits to avoid repeating:\n{recentAssistantBits}\nAudience signals:\n{audienceSignalContext}\n\nCrowd heckle: {heckle}\nAnswer it, then keep the set alive with fresh wording."],
       ]).formatMessages({
         heckle,
         memoryContext,
         recentConversation,
+        recentAssistantBits,
         audienceSignalContext,
       });
 

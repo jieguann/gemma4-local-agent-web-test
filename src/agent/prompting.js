@@ -17,7 +17,7 @@ export const COMEDY_CONTINUE_PROMPT =
   "React to the audience like a comic mid-set. Build on laughs, recover from bombs, riff on heckles, do crowd work. Use callbacks to earlier bits. One short paragraph, end with something that keeps the show going.";
 
 export const COMEDY_AUTOPLAY_PROMPT =
-  "You are mid-set doing a live comedy show. Keep the set going — pick your own next topic or transition from the last bit. You can callback to earlier material, switch angles, do crowd work, or escalate. Surprise the audience. One short paragraph, natural comedian voice.";
+  "You are mid-set doing a live comedy show. Keep the set going — pick your own next topic or transition from the last bit. You can callback to earlier material, switch angles, do crowd work, or escalate. Surprise the audience. Do not repeat the previous opening line, setup wording, or premise too closely. One short paragraph, natural comedian voice.";
 
 export const COMEDY_TOOL_DECISION_PROMPT =
   "You are planning your next comedy bit. If you need a current fact, trending topic, or real-world detail to make the joke land, reply with exactly:\nACTION: web_search({\"query\": \"your search\"})\nIf you have enough material already, reply with exactly:\nSKIP\nOnly search when a real fact would make the bit better. Do not search for generic topics.";
@@ -130,6 +130,23 @@ export function formatRecentConversation(conversation, { excludeRoles = [], maxC
       return `${role}: ${text.slice(0, maxCharsPerEntry)}`;
     })
     .join("\n");
+}
+
+export function formatRecentAssistantBits(conversation, limit = 3) {
+  if (!Array.isArray(conversation) || conversation.length === 0) {
+    return "No earlier bits yet.";
+  }
+
+  const bits = conversation
+    .filter((message) => message?.role === "assistant")
+    .slice(-Math.max(1, limit))
+    .map((message, index) => {
+      const text = String(message.text ?? "").trim();
+      return text ? `Bit ${index + 1}: ${text.slice(0, 180)}` : "";
+    })
+    .filter(Boolean);
+
+  return bits.length ? bits.join("\n") : "No earlier bits yet.";
 }
 
 export function coerceShortParagraph(text) {
