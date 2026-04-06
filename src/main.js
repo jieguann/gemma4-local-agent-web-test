@@ -9,12 +9,14 @@ import { COMEDY_SYSTEM_PROMPT } from "./agent/prompting.js";
 let _agentModules = null;
 async function getAgentModules() {
   if (!_agentModules) {
-    const [agentMod, modelMod] = await Promise.all([
+    const [agentMod, feedbackMod, modelMod] = await Promise.all([
       import("./agent/index.js"),
+      import("./agent/feedback.js"),
       import("./agent/model.js"),
     ]);
     _agentModules = {
       createComedyAgent: agentMod.createComedyAgent,
+      createFeedbackAgent: feedbackMod.createFeedbackAgent,
       LangChainGemmaAdapter: modelMod.LangChainGemmaAdapter,
     };
   }
@@ -54,6 +56,10 @@ const stageStateText = document.querySelector("#stageStateText");
 const audienceMoodLabel = document.querySelector("#audienceMoodLabel");
 const audienceMoodFill = document.querySelector("#audienceMoodFill");
 const laughFeedbackText = document.querySelector("#laughFeedbackText");
+const criticScoreText = document.querySelector("#criticScoreText");
+const criticEmotionText = document.querySelector("#criticEmotionText");
+const criticAdviceText = document.querySelector("#criticAdviceText");
+const heckleStatusText = document.querySelector("#heckleStatusText");
 const emojiReactions = document.querySelector("#emojiReactions");
 const reactionButtons = [...document.querySelectorAll(".reaction-btn")];
 
@@ -66,6 +72,7 @@ const BUNDLED_MODEL_LABELS = {
 
 let llmInference;
 let comedyAgent;
+let feedbackAgent;
 let isGenerating = false;
 let activeModelSource;
 let conversation = [];
@@ -78,6 +85,12 @@ let wantsAmbientMusic = true;
 let recreateInferencePromise = null;
 let nextMessageId = 1;
 let inferenceCooldownUntil = 0;
+let latestCriticSnapshot = {
+  score: 18,
+  emotion: "warming up",
+  advice: "Load the model and let the room react.",
+  heckle: "No heckle yet.",
+};
 
 const PAUSE_BETWEEN_BITS_MS = 3000;
 const INFERENCE_COOLDOWN_MS = 650;
@@ -235,6 +248,20 @@ function setAudienceMood(score, label, feedback) {
   saveSessionState();
 }
 
+function setCriticPanel({ score, emotion, advice, heckle }) {
+  criticScoreText.textContent = `${Math.max(0, Math.min(100, Math.round(score ?? 0)))}/100`;
+  criticEmotionText.textContent = emotion || "reading the room";
+  criticAdviceText.textContent = advice || "The evaluator is waiting for a bit to score.";
+  heckleStatusText.textContent = heckle || "No heckle. The crowd is letting it slide.";
+  latestCriticSnapshot = {
+    score: Math.max(0, Math.min(100, Math.round(score ?? 0))),
+    emotion: emotion || "reading the room",
+    advice: advice || "The evaluator is waiting for a bit to score.",
+    heckle: heckle || "No heckle. The crowd is letting it slide.",
+  };
+  saveSessionState();
+}
+
 function setActiveReaction(reaction) {
   for (const button of reactionButtons) {
     button.classList.toggle("active", button.dataset.reaction === reaction);
@@ -250,35 +277,6 @@ function pushAudienceSignal(signal) {
   recentAudienceSignals.push(trimmed);
   recentAudienceSignals = recentAudienceSignals.slice(-6);
   saveSessionState();
-}
-
-function evaluateLaughResponse(text) {
-  const source = String(text ?? "");
-  const lowered = source.toLowerCase();
-  let score = 34 + Math.min(18, Math.floor(source.length / 22));
-
-  if (/[!?]{2,}/.test(source)) score += 10;
-  if (/callback|crowd|heckle|trend|banana|stage|punchline/.test(lowered)) score += 8;
-  if (/why|because|like|basically|imagine|it's like/.test(lowered)) score += 7;
-  if (/(absurd|ridiculous|chaos|insane|wild)/.test(lowered)) score += 6;
-
-  const label =
-    score >= 78 ? "Audience mood: big laugh" :
-    score >= 60 ? "Audience mood: strong chuckle" :
-    score >= 42 ? "Audience mood: warm grin" :
-    "Audience mood: polite smile";
-  const feedback =
-    score >= 78 ? "Big laugh. The room leans in for the next tag." :
-    score >= 60 ? "Solid laugh. The bit has momentum." :
-    score >= 42 ? "A few chuckles ripple through the room." :
-    "The crowd is listening, but the next line needs a sharper punch.";
-
-  return {
-    score,
-    label,
-    feedback,
-    burstCount: score >= 78 ? 6 : score >= 60 ? 4 : score >= 42 ? 3 : 2,
-  };
 }
 
 function triggerLaughBurst(count) {
@@ -450,8 +448,16 @@ async function loadModel() {
     llmInference = await createInference(activeModelSource);
 
     setStatus("Loading agent...");
-    const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
+    const { createComedyAgent, createFeedbackAgent, LangChainGemmaAdapter } = await getAgentModules();
     comedyAgent = createComedyAgent({
+      model: new LangChainGemmaAdapter({
+        getInference: () => llmInference,
+        recreateInference,
+        onStatus: setStatus,
+      }),
+      onStatus: setStatus,
+    });
+    feedbackAgent = createFeedbackAgent({
       model: new LangChainGemmaAdapter({
         getInference: () => llmInference,
         recreateInference,
@@ -464,6 +470,14 @@ async function loadModel() {
     setStatus("Model loaded. The comedian is taking the stage...");
     setStageState("Opening set");
     setAudienceMood(26, "Audience mood: settling in", "The mic is hot and the room is ready.");
+    setCriticPanel({
+      score: 18,
+      emotion: "warming up",
+      advice: "The evaluator will score each finished bit.",
+      heckle: "No heckle yet.",
+    });
+    // Give the freshly loaded engine extra settling time
+    markInferenceCooldown(INFERENCE_COOLDOWN_MS * 2);
     updatePromptTokens();
     syncUi();
 
@@ -491,8 +505,16 @@ async function recreateInference() {
   recreateInferencePromise = (async () => {
     llmInference?.close();
     llmInference = await createInference(activeModelSource);
-    const { createComedyAgent, LangChainGemmaAdapter } = await getAgentModules();
+    const { createComedyAgent, createFeedbackAgent, LangChainGemmaAdapter } = await getAgentModules();
     comedyAgent = createComedyAgent({
+      model: new LangChainGemmaAdapter({
+        getInference: () => llmInference,
+        recreateInference,
+        onStatus: setStatus,
+      }),
+      onStatus: setStatus,
+    });
+    feedbackAgent = createFeedbackAgent({
       model: new LangChainGemmaAdapter({
         getInference: () => llmInference,
         recreateInference,
@@ -524,10 +546,17 @@ function unloadModel() {
   }
 
   comedyAgent = undefined;
+  feedbackAgent = undefined;
   isGenerating = false;
   activeModelSource = undefined;
   recreateInferencePromise = null;
   inferenceCooldownUntil = 0;
+  setCriticPanel({
+    score: 18,
+    emotion: "offline",
+    advice: "Load the model to re-enable the crowd judge.",
+    heckle: "No heckle while the stage is dark.",
+  });
   setFactStatus(modelStatus, "", "Model: not loaded");
   tokenStatus.className = "";
   tokenStatus.textContent = "Chat tokens: n/a";
@@ -617,7 +646,7 @@ async function startSet() {
       return comedyAgent.nextBit({
         userInput: userInput || null,
         audienceSignals: [...recentAudienceSignals],
-        conversation: [...conversation],
+        conversation: conversation.filter((message) => message.role !== "critic"),
         onToken: (partialText) => {
           streamer.feed(partialText);
         },
@@ -636,7 +665,7 @@ async function startSet() {
 
 let currentAssistantMessage = null;
 
-async function runOneBit(agentCall) {
+async function runOneBit(agentCall, { evaluateWithCrowd = true } = {}) {
   await waitForInferenceCooldown();
 
   const assistantMessage = createMessage("assistant", "");
@@ -663,16 +692,47 @@ async function runOneBit(agentCall) {
     streamer.flush(result.output);
     // Ensure full text is visible after all speech finishes
     assistantMessage.text = keepLongestText(assistantMessage.text, result.output);
-    const laugh = evaluateLaughResponse(result.output);
-    setStageState("Punchline landed");
-    setAudienceMood(laugh.score, laugh.label, laugh.feedback);
-    celebrateBitLanding(laugh.score);
+    let evaluation = null;
+    try {
+      if (evaluateWithCrowd && feedbackAgent) {
+        // Wait for the inference engine to settle after the comedy bit
+        markInferenceCooldown();
+        await waitForInferenceCooldown();
+        evaluation = await evaluateWithRetry({
+          joke: result.output,
+          audienceSignals: [...recentAudienceSignals],
+          conversation: [...conversation],
+        });
+        markInferenceCooldown();
+        conversation.push(createMessage("critic", formatCriticSummary(evaluation)));
+        renderConversation();
+        applyCrowdEvaluation(evaluation);
+      } else {
+        setStageState("Punchline landed");
+        setAudienceMood(55, "Audience mood: holding", "The room is waiting for the next beat.");
+      }
+    } catch (feedbackError) {
+      setStageState("Punchline landed");
+      setAudienceMood(55, "Audience mood: mixed room", "The joke landed, but the crowd judge missed its cue.");
+      setCriticPanel({
+        score: 55,
+        emotion: "judge offline",
+        advice: "Evaluator failed. Falling back to live set mode.",
+        heckle: "No heckle because the judge missed the beat.",
+      });
+      setStatus(`Bit delivered, but feedback failed: ${getErrorMessage(feedbackError)}`);
+    }
+
     setStatus(
       result.usedTools?.length
         ? `Bit delivered (used ${result.usedTools.join(", ")}). The set continues...`
         : "The set continues...",
     );
     saveSessionState();
+
+    if (evaluateWithCrowd && shouldTriggerHeckle(evaluation)) {
+      await triggerCrowdHeckleRecovery(evaluation);
+    }
   } catch (error) {
     if (assistantMessage.text.trim()) {
       // Keep the partial message if it already generated something
@@ -738,8 +798,15 @@ function clearChat() {
   conversation = [];
   lastAssistantReply = "";
   recentAudienceSignals = [];
+  latestCriticSnapshot = {
+    score: 18,
+    emotion: "warming up",
+    advice: "The evaluator will score each finished bit.",
+    heckle: "No heckle yet.",
+  };
   setStageState("Resetting set");
   setAudienceMood(20, "Audience mood: resetting", "Fresh crowd, fresh opener.");
+  setCriticPanel(latestCriticSnapshot);
   setActiveReaction(null);
   renderConversation();
   updatePromptTokens();
@@ -816,7 +883,11 @@ function renderConversation() {
     .map((message, index) => {
       const isLast = index === conversation.length - 1;
       const isStreaming = isLast && message.role === "assistant" && isGenerating;
-      const roleLabel = message.role === "assistant" ? "Gemma Comedy Agent" : "You";
+      const roleLabel =
+        message.role === "assistant" ? "Gemma Comedy Agent" :
+        message.role === "crowd" ? "Crowd Heckle" :
+        message.role === "critic" ? "Crowd Judge" :
+        "You";
       const extraClass = isStreaming ? " streaming" : "";
 
       return `
@@ -864,7 +935,8 @@ function restoreSessionState() {
     const parsed = JSON.parse(raw);
     conversation = Array.isArray(parsed.conversation)
       ? parsed.conversation
-          .filter((message) => message && (message.role === "user" || message.role === "assistant"))
+          .filter((message) => message && ["user", "assistant", "crowd", "critic"].includes(message.role))
+          .slice(-12)
           .map((message) => ({
             id: Number.isFinite(message.id) ? message.id : nextMessageId++,
             role: message.role,
@@ -895,12 +967,31 @@ function restoreSessionState() {
     audienceMoodFill.style.width = `${Math.max(8, Math.min(100, Math.round(score)))}%`;
     audienceMoodLabel.textContent = moodLabel;
     laughFeedbackText.textContent = moodFeedback;
+    latestCriticSnapshot = {
+      score: Number.isFinite(parsed.criticScore) ? parsed.criticScore : 18,
+      emotion: typeof parsed.criticEmotion === "string" && parsed.criticEmotion.trim()
+        ? parsed.criticEmotion
+        : "warming up",
+      advice: typeof parsed.criticAdvice === "string" && parsed.criticAdvice.trim()
+        ? parsed.criticAdvice
+        : "The evaluator is waiting for a bit to score.",
+      heckle: typeof parsed.heckleStatus === "string" && parsed.heckleStatus.trim()
+        ? parsed.heckleStatus
+        : "No heckle yet.",
+    };
+    setCriticPanel(latestCriticSnapshot);
     restored = true;
   } catch {
     stageStateText.textContent = "Warming up";
     audienceMoodFill.style.width = "18%";
     audienceMoodLabel.textContent = "Audience mood: waiting";
     laughFeedbackText.textContent = "The room is settling in.";
+    setCriticPanel({
+      score: 18,
+      emotion: "warming up",
+      advice: "The evaluator is waiting for a bit to score.",
+      heckle: "No heckle yet.",
+    });
   }
 
   return restored;
@@ -919,11 +1010,115 @@ function saveSessionState() {
         stageStateText: stageStateText.textContent,
         audienceMoodLabel: audienceMoodLabel.textContent,
         laughFeedbackText: laughFeedbackText.textContent,
+        criticScore: latestCriticSnapshot.score,
+        criticEmotion: latestCriticSnapshot.emotion,
+        criticAdvice: latestCriticSnapshot.advice,
+        heckleStatus: latestCriticSnapshot.heckle,
       }),
     );
   } catch {
     // Ignore storage failures so the live set keeps running.
   }
+}
+
+function applyCrowdEvaluation(evaluation) {
+  const presentation = getFeedbackPresentation(evaluation);
+  const reactionToButton = {
+    erupting_laugh: "love",
+    strong_laugh: "laugh",
+    chuckle: "smile",
+    mixed: null,
+    groan: "groan",
+    silence: "bomb",
+    bomb: "bomb",
+  };
+
+  setStageState("Punchline judged");
+  setAudienceMood(presentation.score, presentation.label, presentation.feedback);
+  setActiveReaction(reactionToButton[evaluation.reaction] ?? null);
+  setCriticPanel({
+    score: evaluation.score,
+    emotion: evaluation.emotion,
+    advice: evaluation.advice,
+    heckle: evaluation.shouldHeckle && evaluation.heckle
+      ? `Heckle ready: ${evaluation.heckle}`
+      : "No heckle. The crowd lets the joke breathe.",
+  });
+  pushAudienceSignal(`Crowd judge: ${evaluation.verdict} Emotion: ${evaluation.emotion}. Advice: ${evaluation.advice}`);
+
+  // Trigger the judge's specific emotion emojis instead of generic laughs
+  const emojis = Array.isArray(evaluation.emojis) ? evaluation.emojis : [];
+  if (emojis.length > 0) {
+    for (const emoji of emojis) {
+      triggerSpecificEmojiBurst(emoji, presentation.burstCount);
+    }
+  } else {
+    celebrateBitLanding(presentation.score);
+  }
+
+  // Glow effect on the last assistant message
+  const lastArticle = chatMessages.querySelector(".message.assistant:last-child");
+  if (lastArticle) {
+    lastArticle.classList.remove("joke-landed");
+    void lastArticle.offsetWidth;
+    lastArticle.classList.add("joke-landed");
+  }
+}
+
+function formatCriticSummary(evaluation) {
+  const score = Math.max(0, Math.min(100, Math.round(evaluation?.score ?? 0)));
+  const verdict = String(evaluation?.verdict ?? "").trim() || "Mixed room.";
+  const emotion = String(evaluation?.emotion ?? "").trim() || "uncertain room";
+  const advice = String(evaluation?.advice ?? "").trim() || "Tighten the next punch.";
+  const heckle = evaluation?.shouldHeckle && evaluation?.heckle
+    ? `Heckle: ${evaluation.heckle}`
+    : "Heckle: none";
+  const emojis = Array.isArray(evaluation?.emojis) ? evaluation.emojis.join("") : "";
+  return `${emojis} Crowd score ${score}/100. ${verdict} Emotion: ${emotion}. Advice: ${advice}. ${heckle}`;
+}
+
+function shouldTriggerHeckle(evaluation) {
+  return Boolean(
+    evaluation
+    && evaluation.shouldHeckle
+    && evaluation.heckle
+    && evaluation.score <= 45
+    && comedyAgent,
+  );
+}
+
+async function triggerCrowdHeckleRecovery(evaluation) {
+  const heckle = String(evaluation?.heckle ?? "").trim();
+  if (!heckle || !comedyAgent) {
+    return;
+  }
+
+  pushAudienceSignal(`Crowd heckle: ${heckle}`);
+  conversation.push(createMessage("crowd", heckle));
+  renderConversation();
+  saveSessionState();
+  setStageState("Crowd heckle");
+  // Let the inference engine settle before the comedy agent defends
+  markInferenceCooldown();
+  await waitForInferenceCooldown();
+  setCriticPanel({
+    score: evaluation.score,
+    emotion: evaluation.emotion,
+    advice: evaluation.advice,
+    heckle: `Crowd heckle: ${heckle}`,
+  });
+
+  await runOneBit(
+    (streamer) => comedyAgent.defendAgainstHeckle({
+      heckle,
+      audienceSignals: [...recentAudienceSignals, `Critic advice: ${evaluation.advice}`],
+      conversation: conversation.filter((message) => message.role !== "critic"),
+      onToken: (partialText) => {
+        streamer.feed(partialText);
+      },
+    }),
+    { evaluateWithCrowd: false },
+  );
 }
 
 function createMessage(role, text = "") {
@@ -934,10 +1129,51 @@ function createMessage(role, text = "") {
   };
 }
 
+function getFeedbackPresentation(evaluation) {
+  const score = Math.max(0, Math.min(100, Math.round(evaluation?.score ?? 0)));
+  const reaction = String(evaluation?.reaction ?? "").trim().toLowerCase();
+  const verdict = String(evaluation?.verdict ?? "").trim();
+  const emotion = String(evaluation?.emotion ?? "").trim() || "uncertain room";
+
+  const label =
+    reaction === "erupting_laugh" || score >= 86 ? "Audience mood: eruption" :
+    reaction === "strong_laugh" || score >= 70 ? "Audience mood: strong laugh" :
+    reaction === "chuckle" || score >= 56 ? "Audience mood: chuckling" :
+    reaction === "mixed" || score >= 42 ? "Audience mood: mixed room" :
+    reaction === "groan" || score >= 28 ? "Audience mood: groans" :
+    reaction === "silence" ? "Audience mood: tense silence" :
+    "Audience mood: bombed";
+
+  const feedback = verdict || `The room feels ${emotion}.`;
+  const burstCount =
+    reaction === "erupting_laugh" || score >= 86 ? 7 :
+    reaction === "strong_laugh" || score >= 70 ? 5 :
+    reaction === "chuckle" || score >= 56 ? 4 :
+    reaction === "mixed" || score >= 42 ? 3 :
+    2;
+
+  return { score, label, feedback, burstCount };
+}
+
 function keepLongestText(currentText, nextText) {
   const current = String(currentText ?? "");
   const next = String(nextText ?? "");
   return next.length >= current.length ? next : current;
+}
+
+async function evaluateWithRetry(params, retries = 1) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await feedbackAgent.evaluateBit(params);
+    } catch (err) {
+      if (attempt < retries) {
+        setStatus("Judge missed the cue — retrying...");
+        await delay(INFERENCE_COOLDOWN_MS * 2);
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 function markInferenceCooldown(durationMs = INFERENCE_COOLDOWN_MS) {
@@ -985,6 +1221,10 @@ function buildPromptFromMessages(messages) {
 
   for (const message of messages) {
     if (!message.text?.trim()) {
+      continue;
+    }
+
+    if (message.role === "critic") {
       continue;
     }
 

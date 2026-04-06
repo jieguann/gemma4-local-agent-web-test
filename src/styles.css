@@ -444,6 +444,52 @@ button.danger:hover:enabled {
   color: var(--text-secondary);
 }
 
+.critic-card {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 196, 87, 0.16);
+  background: linear-gradient(135deg, rgba(255, 196, 87, 0.08), rgba(248, 113, 113, 0.08));
+}
+
+.critic-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.critic-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  color: #ffd788;
+}
+
+.critic-score strong {
+  font-size: 1rem;
+  color: #fff4d1;
+}
+
+.critic-emotion,
+.critic-advice,
+.heckle-status {
+  font-size: 0.8rem;
+}
+
+.critic-emotion {
+  color: #ffd788;
+}
+
+.critic-advice {
+  color: var(--text-secondary);
+}
+
+.heckle-status {
+  color: #ffb0a7;
+}
+
 .reaction-strip {
   display: flex;
   align-items: center;
@@ -529,6 +575,17 @@ button.danger:hover:enabled {
   color: var(--accent);
 }
 
+.message.crowd {
+  align-self: center;
+  max-width: 70%;
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.12), rgba(255, 196, 87, 0.09));
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+.message.crowd .message-role {
+  color: #ffb4a8;
+}
+
 .message.assistant {
   align-self: flex-start;
   background: var(--surface);
@@ -537,6 +594,17 @@ button.danger:hover:enabled {
 
 .message.assistant .message-role {
   color: var(--muted);
+}
+
+.message.critic {
+  align-self: flex-start;
+  max-width: 74%;
+  background: rgba(255, 196, 87, 0.08);
+  border: 1px solid rgba(255, 196, 87, 0.18);
+}
+
+.message.critic .message-role {
+  color: #ffd788;
 }
 
 .message-body {

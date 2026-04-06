@@ -1,0 +1,271 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+:root {
+  color-scheme: dark;
+  --bg: #080e18;
+  --panel: rgba(12, 22, 38, 0.82);
+  --panel-strong: rgba(14, 30, 52, 0.88);
+  --surface: rgba(18, 38, 62, 0.55);
+  --border: rgba(140, 185, 255, 0.12);
+  --border-focus: rgba(124, 240, 200, 0.45);
+  --text: #eaf2ff;
+  --text-secondary: #a4bdd4;
+  --muted: #7a96b4;
+  --accent: #6ee7b7;
+  --accent-dim: rgba(110, 231, 183, 0.15);
+  --danger: #f87171;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 60% at 10% 0%, rgba(56, 120, 255, 0.18), transparent),
+    radial-gradient(ellipse 60% 50% at 90% 5%, rgba(52, 211, 153, 0.14), transparent);
+}
+
+/* ── Nav ── */
+
+.arch-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  backdrop-filter: blur(20px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.arch-nav h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.back-link {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 500;
+  transition: opacity 160ms;
+}
+
+.back-link:hover {
+  opacity: 0.75;
+}
+
+/* ── Main ── */
+
+.arch-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* ── Diagram ── */
+
+.arch-diagram-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  overflow-x: auto;
+}
+
+.arch-diagram-container {
+  width: 100%;
+  min-height: 420px;
+}
+
+.arch-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.node rect {
+  transition: stroke-width 160ms, filter 160ms;
+}
+
+.node:hover rect,
+.node.active rect {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 12px currentColor);
+}
+
+.node.active rect {
+  stroke-width: 3.5;
+}
+
+.node-label {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.edge-label {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 8.5px;
+  font-weight: 500;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* ── Legend ── */
+
+.arch-legend {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.2rem 1.5rem;
+}
+
+.arch-legend h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.8rem;
+}
+
+.legend-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Detail card ── */
+
+.arch-details {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.2rem 1.5rem;
+  min-height: 100px;
+}
+
+.detail-card h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.detail-card p {
+  margin: 0.3rem 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.detail-file code {
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: var(--surface);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+
+.detail-hint {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ── Flow cards ── */
+
+.arch-flows {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.arch-flows h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.flow-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.2rem 1.5rem;
+}
+
+.flow-card h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.flow-card ol {
+  margin: 0;
+  padding-left: 1.3rem;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.7;
+}
+
+.flow-card ol li {
+  margin-bottom: 0.15rem;
+}
+
+.flow-card code {
+  font-size: 0.82rem;
+  color: var(--text);
+  background: var(--surface);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.flow-card strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ── Scrollbar ── */
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(140, 185, 255, 0.18); border-radius: 3px; }
+
+/* ── Responsive ── */
+
+@media (max-width: 700px) {
+  .arch-main { padding: 1rem; }
+  .arch-nav { padding: 0.8rem 1rem; }
+  .legend-grid { flex-direction: column; gap: 0.5rem; }
+}

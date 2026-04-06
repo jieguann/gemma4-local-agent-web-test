@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Architecture — Gemma Comedy Agent</title>
+    <script type="module" src="/src/architecture.js"></script>
+  </head>
+  <body>
+    <nav class="arch-nav">
+      <a href="/" class="back-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        Back to Comedy Booth
+      </a>
+      <h1>Agent Architecture</h1>
+    </nav>
+
+    <main class="arch-main">
+      <section class="arch-diagram-section">
+        <div id="diagramContainer" class="arch-diagram-container"></div>
+      </section>
+
+      <section class="arch-legend">
+        <h2>Legend</h2>
+        <div class="legend-grid">
+          <div class="legend-item"><span class="legend-dot" style="background:#6ee7b7"></span> Comedy Agent</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span> Judge Agent</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#818cf8"></span> Shared Infrastructure</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f87171"></span> External / Browser APIs</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#38bdf8"></span> UI Layer</div>
+        </div>
+      </section>
+
+      <section class="arch-details">
+        <div class="detail-card" id="detailCard">
+          <p class="detail-hint">Click any node in the diagram to see details.</p>
+        </div>
+      </section>
+
+      <section class="arch-flows">
+        <h2>Data Flows</h2>
+
+        <div class="flow-card">
+          <h3>1. Comedy Set Loop</h3>
+          <ol>
+            <li><strong>startSet()</strong> begins the continuous loop in <code>main.js</code></li>
+            <li>If no prior conversation, calls <code>comedyAgent.opener()</code></li>
+            <li>Main loop: <code>waitBetweenBits()</code> (3s pause) then <code>runOneBit()</code></li>
+            <li><code>nextBit()</code> checks for pending audience input</li>
+            <li>If input exists: <code>inferComedyMode()</code> routes to interactive riff or full plan+render pipeline</li>
+            <li>If no input: autonomous freestyle with optional web search</li>
+            <li>Tokens stream to TTS and UI simultaneously</li>
+          </ol>
+        </div>
+
+        <div class="flow-card">
+          <h3>2. Text + Voice Sync</h3>
+          <ol>
+            <li><code>runOneBit()</code> creates a <code>streamSpeaker</code> from the TTS synthesizer</li>
+            <li>Each <code>onToken</code> callback calls <code>streamer.feed(fullText)</code></li>
+            <li>The streamer splits text at sentence boundaries and queues each to <code>speechSynthesis</code></li>
+            <li>Each utterance's <code>start</code> event fires <code>onReveal(visibleText)</code></li>
+            <li>The UI updates the displayed text only when the sentence begins playing</li>
+            <li>After generation completes, <code>streamer.flush()</code> speaks the remaining text</li>
+          </ol>
+        </div>
+
+        <div class="flow-card">
+          <h3>3. Judge Evaluation</h3>
+          <ol>
+            <li>After the comedy bit finishes, the inference engine gets a 650ms cooldown</li>
+            <li><code>feedbackAgent.evaluateBit()</code> sends the joke + audience signals + conversation to the judge prompt</li>
+            <li>If the engine is still busy, retries once after 1300ms</li>
+            <li>Judge outputs: Score, Emotion, Emojis, Verdict, Reaction, ShouldHeckle, Heckle, Advice</li>
+            <li><code>applyCrowdEvaluation()</code> triggers the judge's specific emojis as floating bursts</li>
+            <li>Updates mood bar, critic panel, and pushes audience signals for next bit</li>
+          </ol>
+        </div>
+
+        <div class="flow-card">
+          <h3>4. Heckle Recovery</h3>
+          <ol>
+            <li>If judge score &le; 45 and <code>shouldHeckle: true</code>, the heckle flow triggers</li>
+            <li>Heckle is shown as a "crowd" message in the chat</li>
+            <li>After another inference cooldown, <code>comedyAgent.defendAgainstHeckle()</code> fires</li>
+            <li>Uses <code>COMEDY_DEFENSE_PROMPT</code> to generate a quick comeback</li>
+            <li>Defense bit streams with TTS like a normal bit (but skips judge evaluation to avoid infinite loop)</li>
+          </ol>
+        </div>
+
+        <div class="flow-card">
+          <h3>5. Autonomous Tool Use</h3>
+          <ol>
+            <li>Before each planned bit, <code>autonomousToolStep()</code> runs <code>COMEDY_TOOL_DECISION_PROMPT</code></li>
+            <li>Model decides: output <code>ACTION: web_search({...})</code> or <code>SKIP</code></li>
+            <li>If searching, the <code>web_search</code> tool proxies through Vite to DuckDuckGo / Wikipedia</li>
+            <li>Search results (top 3, truncated to 160 chars each) feed into the joke prompt as "Facts"</li>
+          </ol>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

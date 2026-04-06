@@ -28,6 +28,24 @@ export const COMEDY_PLANNER_PROMPT =
 export const COMEDY_RENDER_PROMPT =
   "Perform the bit from the blueprint. One short paragraph, natural comedian voice. Setup then payoff. Stay on topic.";
 
+export const COMEDY_DEFENSE_PROMPT =
+  "A crowd heckle just hit after a weak joke. Answer like a seasoned comic: quick defense, playful pivot, no sulking, no explaining the joke for too long. One short paragraph that regains momentum.";
+
+export const FEEDBACK_SYSTEM_PROMPT =
+  "You are the audience feedback agent for a live stand-up set. Judge how the joke landed, describe the room's emotional reaction, and decide whether the crowd heckles back. Be blunt, specific, and useful to the comedian.";
+
+export const FEEDBACK_EVALUATION_PROMPT = [
+  "Evaluate the bit and return exactly these labels on separate lines:",
+  "Score: 0-100",
+  "Emotion: short crowd emotion phrase",
+  "Emojis: 1-3 emojis that capture the crowd's feeling (e.g. 😂🔥 for a killer bit, 😬💀 for a bomb, 🤣👏 for strong laugh, 😐🦗 for silence)",
+  "Verdict: one short sentence",
+  "Reaction: one of erupting_laugh, strong_laugh, chuckle, mixed, groan, silence, bomb",
+  "ShouldHeckle: yes or no",
+  "Heckle: short heckle line or 'none'",
+  "Advice: one short coaching note for the next response",
+].join("\n");
+
 export function stripControlTokens(text) {
   return String(text ?? "")
     .replace(/<start_of_turn>(?:user|model)\n?/g, "")
@@ -91,17 +109,25 @@ export function buildGemmaPrompt(messages) {
   return prompt;
 }
 
-export function formatRecentConversation(conversation) {
+export function formatRecentConversation(conversation, { excludeRoles = [], maxCharsPerEntry = 200 } = {}) {
   if (!Array.isArray(conversation) || conversation.length === 0) {
     return "No prior conversation yet.";
   }
 
-  const recentTurns = conversation.slice(-4);
+  const filtered = excludeRoles.length > 0
+    ? conversation.filter((m) => !excludeRoles.includes(m.role))
+    : conversation;
+
+  const recentTurns = filtered.slice(-4);
   return recentTurns
     .map((message) => {
-      const role = message.role === "assistant" ? "Assistant" : "User";
+      const role =
+        message.role === "assistant" ? "Assistant" :
+        message.role === "crowd" ? "Crowd" :
+        message.role === "critic" ? "Critic" :
+        "User";
       const text = String(message.text ?? "").trim() || "(empty)";
-      return `${role}: ${text}`;
+      return `${role}: ${text.slice(0, maxCharsPerEntry)}`;
     })
     .join("\n");
 }

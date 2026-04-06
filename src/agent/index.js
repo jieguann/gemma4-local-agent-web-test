@@ -3,6 +3,7 @@ import { loadAgentMemory, saveAgentMemory, buildMemoryContext, updateMemoryFromT
 import {
   COMEDY_AUTOPLAY_PROMPT,
   COMEDY_CONTINUE_PROMPT,
+  COMEDY_DEFENSE_PROMPT,
   COMEDY_OPENER_PROMPT,
   COMEDY_PLANNER_PROMPT,
   COMEDY_RENDER_PROMPT,
@@ -220,6 +221,32 @@ export function createComedyAgent({ model, onStatus }) {
         : "Bit delivered. The set continues...");
 
       return { output: finalAnswer, usedTools };
+    },
+
+    async defendAgainstHeckle({ heckle, audienceSignals = [], conversation = [], onToken } = {}) {
+      const memory = await loadAgentMemory();
+      const memoryContext = buildMemoryContext(memory);
+      const recentConversation = formatRecentConversation(conversation);
+      const audienceSignalContext = formatAudienceSignals(audienceSignals);
+
+      onStatus?.("Answering the heckler...");
+      const defensePrompt = await ChatPromptTemplate.fromMessages([
+        ["system", `${COMEDY_SYSTEM_PROMPT}\n${COMEDY_DEFENSE_PROMPT}`],
+        ["human", "Audience: {memoryContext}\nRecent:\n{recentConversation}\nAudience signals:\n{audienceSignalContext}\n\nCrowd heckle: {heckle}\nAnswer it, then keep the set alive."],
+      ]).formatMessages({
+        heckle,
+        memoryContext,
+        recentConversation,
+        audienceSignalContext,
+      });
+
+      const result = await model.invoke(defensePrompt, { onToken });
+      const output = coerceShortParagraph(normalizeMessageContent(result.content));
+      const nextMemory = updateMemoryFromTurn(memory, `(heckle) ${String(heckle ?? "").trim()}`, output);
+      await saveAgentMemory(nextMemory);
+      onStatus?.("Recovered from the heckle.");
+
+      return { output, usedTools: [] };
     },
 
     cancel() {

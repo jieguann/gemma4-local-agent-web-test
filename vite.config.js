@@ -28,6 +28,14 @@ export default defineConfig({
       ignored: ["**/memory/**"],
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(process.cwd(), "index.html"),
+        architecture: path.resolve(process.cwd(), "architecture.html"),
+      },
+    },
+  },
   plugins: [localAgentApiPlugin()],
 });
 

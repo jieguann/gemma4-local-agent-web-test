@@ -163,6 +163,15 @@
               </div>
             </div>
             <p id="laughFeedbackText" class="laugh-feedback">The room is settling in.</p>
+            <div class="critic-card">
+              <div class="critic-score">
+                <span class="critic-label">Crowd Judge</span>
+                <strong id="criticScoreText">18/100</strong>
+              </div>
+              <p id="criticEmotionText" class="critic-emotion">warming up</p>
+              <p id="criticAdviceText" class="critic-advice">The evaluator is waiting for a bit to score.</p>
+              <p id="heckleStatusText" class="heckle-status">No heckle yet.</p>
+            </div>
             <div class="reaction-strip">
               <span class="reaction-strip-label">Quick reaction</span>
               <div class="reaction-buttons">
@@ -226,7 +235,8 @@
             <li>Requires a Chromium-based browser with WebGPU enabled.</li>
             <li>Gemma 4 Web models use browser-optimized <code>.task</code> files.</li>
             <li>Audience memory is stored locally in gitignored <code>memory/</code> JSON files.</li>
-            <li>Local TTS uses Kokoro in-browser and can auto-read the final bit aloud.</li>
+            <li>Local TTS uses browser speechSynthesis and can auto-read each bit aloud.</li>
+            <li><a href="/architecture.html" style="color: var(--accent);">View agent architecture diagram</a></li>
           </ul>
         </section>
       </main>
