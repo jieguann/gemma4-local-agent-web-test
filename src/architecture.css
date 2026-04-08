@@ -94,7 +94,7 @@ body {
 
 .arch-diagram-container {
   width: 100%;
-  min-height: 420px;
+  min-height: 520px;
 }
 
 .arch-svg {
@@ -104,17 +104,7 @@ body {
 }
 
 .node rect {
-  transition: stroke-width 160ms, filter 160ms;
-}
-
-.node:hover rect,
-.node.active rect {
-  stroke-width: 3;
-  filter: drop-shadow(0 0 12px currentColor);
-}
-
-.node.active rect {
-  stroke-width: 3.5;
+  transition: stroke-width 160ms, filter 200ms;
 }
 
 .node-label {
@@ -176,6 +166,27 @@ body {
   border-radius: var(--radius-md);
   padding: 1.2rem 1.5rem;
   min-height: 100px;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.6rem;
+}
+
+.detail-icon {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.detail-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.detail-header p {
+  margin: 0.15rem 0 0;
 }
 
 .detail-card h3 {
